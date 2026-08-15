@@ -1,7 +1,7 @@
 {
   "name": "x-reader",
-  "displayName": "X Reader 小说阅读器",
-  "description": "在 VS Code 中导入 txt 小说，自动解析章节目录并阅读",
+  "displayName": "X Reader",
+  "description": "在 VS Code 中以 Markdown 章节文件阅读小说，并与 Copilot 共创写作",
   "version": "0.1.0",
   "publisher": "xieyuchen",
   "license": "MIT",
@@ -20,7 +20,8 @@
     "reader",
     "txt",
     "小说",
-    "阅读"
+    "阅读",
+    "写作"
   ],
   "main": "./dist/extension.js",
   "icon": "resources/icon.png",
@@ -48,6 +49,18 @@
           "name": "章节目录",
           "icon": "resources/activity-icon.svg",
           "contextualTitle": "小说阅读"
+        },
+        {
+          "id": "xReader.worldbook",
+          "name": "世界书",
+          "icon": "resources/activity-icon.svg",
+          "contextualTitle": "小说阅读"
+        },
+        {
+          "id": "xReader.characters",
+          "name": "角色卡",
+          "icon": "resources/activity-icon.svg",
+          "contextualTitle": "小说阅读"
         }
       ]
     },
@@ -66,14 +79,49 @@
       },
       {
         "command": "xReader.openChapter",
-        "title": "阅读章节",
+        "title": "打开章节",
         "category": "X Reader"
       },
       {
+        "command": "xReader.openEntry",
+        "title": "打开条目",
+        "category": "X Reader"
+      },
+      {
+        "command": "xReader.prevChapter",
+        "title": "上一章",
+        "category": "X Reader",
+        "icon": "$(chevron-left)"
+      },
+      {
+        "command": "xReader.nextChapter",
+        "title": "下一章",
+        "category": "X Reader",
+        "icon": "$(chevron-right)"
+      },
+      {
         "command": "xReader.removeBook",
-        "title": "从书架移除",
+        "title": "删除书籍",
         "category": "X Reader",
         "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.newCharacterCard",
+        "title": "新建角色卡",
+        "category": "X Reader",
+        "icon": "$(person-add)"
+      },
+      {
+        "command": "xReader.newWorldEntry",
+        "title": "新建世界书条目",
+        "category": "X Reader",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "xReader.snapshot",
+        "title": "保存快照",
+        "category": "X Reader",
+        "icon": "$(git-commit)"
       },
       {
         "command": "xReader.refreshBookshelf",
@@ -82,7 +130,29 @@
         "icon": "$(refresh)"
       }
     ],
+    "configuration": {
+      "title": "X Reader",
+      "properties": {
+        "xReader.libraryPath": {
+          "type": "string",
+          "default": "",
+          "description": "小说库目录路径（每本书是其中一个文件夹），留空时首次导入弹窗选择"
+        }
+      }
+    },
     "menus": {
+      "editor/title": [
+        {
+          "command": "xReader.prevChapter",
+          "when": "(resourceDirname =~ /章节$/ && resourceFilename =~ /^\\d{4}-.*\\.md$/) || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "xReader.nextChapter",
+          "when": "(resourceDirname =~ /章节$/ && resourceFilename =~ /^\\d{4}-.*\\.md$/) || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "group": "navigation@2"
+        }
+      ],
       "view/title": [
         {
           "command": "xReader.importBook",
@@ -90,9 +160,24 @@
           "group": "navigation@1"
         },
         {
-          "command": "xReader.refreshBookshelf",
+          "command": "xReader.snapshot",
           "when": "view == xReader.bookshelf",
           "group": "navigation@2"
+        },
+        {
+          "command": "xReader.refreshBookshelf",
+          "when": "view == xReader.bookshelf",
+          "group": "navigation@3"
+        },
+        {
+          "command": "xReader.newWorldEntry",
+          "when": "view == xReader.worldbook",
+          "group": "navigation@1"
+        },
+        {
+          "command": "xReader.newCharacterCard",
+          "when": "view == xReader.characters",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -102,9 +187,19 @@
           "group": "inline@1"
         },
         {
-          "command": "xReader.removeBook",
+          "command": "xReader.newCharacterCard",
           "when": "view == xReader.bookshelf && viewItem == book",
           "group": "inline@2"
+        },
+        {
+          "command": "xReader.newWorldEntry",
+          "when": "view == xReader.bookshelf && viewItem == book",
+          "group": "inline@3"
+        },
+        {
+          "command": "xReader.removeBook",
+          "when": "view == xReader.bookshelf && viewItem == book",
+          "group": "inline@4"
         }
       ]
     }
@@ -121,7 +216,7 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "mocha --ui tdd out/test/**/*.test.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -132,6 +227,7 @@
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.24.0",
     "eslint": "^9.13.0",
+    "mocha": "^11.8.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.61.1"
