@@ -1,0 +1,125 @@
+{
+  "name": "x-reader",
+  "displayName": "X Reader 小说阅读器",
+  "description": "在 VS Code 中导入 txt 小说，自动解析章节目录并阅读",
+  "version": "0.1.0",
+  "publisher": "xieyuchen",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "novel",
+    "reader",
+    "txt",
+    "小说",
+    "阅读"
+  ],
+  "main": "./dist/extension.js",
+  "icon": "resources/icon.png",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "x-reader",
+          "title": "小说阅读",
+          "icon": "resources/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "x-reader": [
+        {
+          "id": "xReader.bookshelf",
+          "name": "书架",
+          "icon": "resources/activity-icon.svg",
+          "contextualTitle": "小说阅读"
+        },
+        {
+          "id": "xReader.chapters",
+          "name": "章节目录",
+          "icon": "resources/activity-icon.svg",
+          "contextualTitle": "小说阅读"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "xReader.importBook",
+        "title": "导入小说",
+        "category": "X Reader",
+        "icon": "$(file-add)"
+      },
+      {
+        "command": "xReader.openBook",
+        "title": "打开",
+        "category": "X Reader",
+        "icon": "$(book)"
+      },
+      {
+        "command": "xReader.openChapter",
+        "title": "阅读章节",
+        "category": "X Reader"
+      },
+      {
+        "command": "xReader.removeBook",
+        "title": "从书架移除",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.refreshBookshelf",
+        "title": "刷新书架",
+        "category": "X Reader",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "xReader.importBook",
+          "when": "view == xReader.bookshelf",
+          "group": "navigation@1"
+        },
+        {
+          "command": "xReader.refreshBookshelf",
+          "when": "view == xReader.bookshelf",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "xReader.openBook",
+          "when": "view == xReader.bookshelf && viewItem == book",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.removeBook",
+          "when": "view == xReader.bookshelf && viewItem == book",
+          "group": "inline@2"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && node esbuild.js",
+    "watch": "npm run check-types && node esbuild.js --watch",
+    "check-types": "tsc --noEmit",
+    "package": "npm run compile && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.7.3"
+  }
+}
