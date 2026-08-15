@@ -5,6 +5,10 @@
   "version": "0.1.0",
   "publisher": "xieyuchen",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cameliorn/x-reader.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -106,11 +110,11 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
+    "vscode:prepublish": "npm run compile -- --production",
     "compile": "npm run check-types && node esbuild.js",
     "watch": "npm run check-types && node esbuild.js --watch",
     "check-types": "tsc --noEmit",
-    "package": "npm run compile && vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
