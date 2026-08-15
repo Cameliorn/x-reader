@@ -110,18 +110,35 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile -- --production",
-    "compile": "npm run check-types && node esbuild.js",
-    "watch": "npm run check-types && node esbuild.js --watch",
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
-    "package": "vsce package --no-dependencies"
+    "lint": "eslint src",
+    "test": "vscode-test"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
     "@vscode/vsce": "^3.2.1",
     "esbuild": "^0.24.0",
-    "typescript": "^5.6.0"
+    "eslint": "^9.13.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
     "iconv-lite": "^0.7.3"

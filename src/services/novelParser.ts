@@ -42,8 +42,12 @@ function detectUtf16(buf: Buffer): 'le' | 'be' | undefined {
 	let evenNul = 0;
 	let oddNul = 0;
 	for (let i = 0; i < Math.min(buf.length, 4096); i += 2) {
-		if (buf[i] === 0) evenNul++;
-		if (i + 1 < buf.length && buf[i + 1] === 0) oddNul++;
+		if (buf[i] === 0) {
+			evenNul++;
+		}
+		if (i + 1 < buf.length && buf[i + 1] === 0) {
+			oddNul++;
+		}
 	}
 	return evenNul >= oddNul ? 'le' : 'be';
 }
