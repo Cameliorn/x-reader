@@ -423,6 +423,33 @@ suite('LibraryService 写操作', () => {
 	const THREE_CHAPTER_TEXT = ['# 第一卷', '## 第1章 甲', '正文甲', '## 第2章 乙', '正文乙', '## 第3章 丙', '正文丙'].join('\n');
 	const TWO_VOLUME_TEXT = ['# 第一卷', '## 第1章 甲', '正文甲', '# 第二卷', '## 第2章 乙', '正文乙'].join('\n');
 
+	test('createBook 新建空书骨架并设为当前书，重名自动加序号', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const cfg = vscode.workspace.getConfiguration('xReader');
+			const prev = cfg.get<string>('libraryPath');
+			await cfg.update('libraryPath', root, vscode.ConfigurationTarget.Global);
+			try {
+				const book = await service.createBook('新书');
+				assert.strictEqual(book.name, '新书');
+				assert.strictEqual(service.getCurrentBook()?.dir, book.dir);
+				await fs.access(path.join(book.dir, CHAPTERS_DIR));
+				const meta = await fs.readFile(path.join(book.dir, META_FILE), 'utf8');
+				assert.ok(meta.includes('title: "新书"'));
+				for (const sub of [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR]) {
+					await fs.access(path.join(book.dir, sub, '.gitkeep'));
+				}
+				const second = await service.createBook('新书');
+				assert.strictEqual(second.name, '新书-2');
+			} finally {
+				await cfg.update('libraryPath', prev ?? '', vscode.ConfigurationTarget.Global);
+			}
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('renameChapter 同步文件名、摘要镜像、导航、进度与笔记关联（含无引号 frontmatter）', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {

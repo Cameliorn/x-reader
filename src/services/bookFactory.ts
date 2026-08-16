@@ -70,7 +70,8 @@ export async function createBookFromText(
 	return { book: { name, dir }, chapterCount: chapters.length };
 }
 
-async function uniqueBookName(libraryRoot: string, base: string): Promise<string> {
+/** 库根下生成不与现有书/目录冲突的书文件夹名（重名自动加 -2、-3…）。 */
+export async function uniqueBookName(libraryRoot: string, base: string): Promise<string> {
 	let name = base;
 	for (let suffix = 2; ; suffix++) {
 		try {

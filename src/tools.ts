@@ -77,7 +77,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke() {
 				const books = await library.listBooks();
 				if (books.length === 0) {
-					return text('小说库还是空的，请先导入 txt 小说。');
+					return text('小说库还是空的，请导入或新建小说。');
 				}
 				const lines = await Promise.all(
 					books.map(async (b) => `${b.name}｜${(await library.listChapters(b)).length} 章`)
@@ -199,7 +199,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const target = await library.renameVolume(book, options.input.oldName, options.input.newName);
-				return text(`已将分卷「${options.input.oldName}」重命名为「${target}」（章节摘要镜像目录同步更名）。`);
+				return text(`已将分卷「${options.input.oldName}」重命名为「${target}」。`);
 			},
 			prepareInvocation: (options) => ({
 				invocationMessage: `重命名分卷「${options.input.oldName}」→「${options.input.newName}」`,
@@ -217,8 +217,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				confirmationMessages: {
 					title: '删除分卷',
 					message: new vscode.MarkdownString(
-						`确定删除分卷「${options.input.name}」${options.input.deleteChapters ? '及其中全部章节' : ''
-						}？文件将被删除（如有 git 历史可恢复）。`
+						`确定删除分卷「${options.input.name}」${options.input.deleteChapters ? '及其中全部章节' : ''}？`
 					),
 				},
 			}),
@@ -232,15 +231,13 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				}
 				const book = await resolveBook(library, name);
 				await library.removeBook(book);
-				return text(`已删除《${book.name}》及其全部章节（如有 git 历史可恢复）。`);
+				return text(`已删除《${book.name}》及其全部章节。`);
 			},
 			prepareInvocation: (options) => ({
 				invocationMessage: `删除书籍「${options.input.name}」`,
 				confirmationMessages: {
 					title: '删除书籍',
-					message: new vscode.MarkdownString(
-						`确定删除《${options.input.name}》？书文件夹将被删除（如有 git 历史可恢复）。`
-					),
+					message: new vscode.MarkdownString(`确定删除《${options.input.name}》？`),
 				},
 			}),
 		}),
@@ -249,7 +246,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const renamed = await library.renameBook(book, options.input.newName);
-				return text(`已将《${book.name}》重命名为《${renamed.name}》（书文件夹、元数据 title、当前选中书与阅读进度已同步）。`);
+				return text(`已将《${book.name}》重命名为《${renamed.name}》。`);
 			},
 			prepareInvocation: (options) => ({ invocationMessage: `重命名书籍→「${options.input.newName}」` }),
 		}),
@@ -303,7 +300,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					options.input.category?.trim() || undefined,
 					chapter
 				);
-				return text(`笔记已就绪：${filePath}（已存在同名笔记时不覆盖）。`);
+				return text(`笔记已就绪：${filePath}。`);
 			},
 			prepareInvocation: (options) => ({ invocationMessage: `新建笔记「${options.input.name}」` }),
 		}),
@@ -325,7 +322,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const filePath = await library.createEntry(book, CARDS_DIR, options.input.name);
-				return text(`角色卡已就绪：${filePath}（已存在同名角色卡时不覆盖）。`);
+				return text(`角色卡已就绪：${filePath}。`);
 			},
 			prepareInvocation: (options) => ({ invocationMessage: `新建角色卡「${options.input.name}」` }),
 		}),
@@ -347,7 +344,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const filePath = await library.createEntry(book, WORLD_DIR, options.input.name);
-				return text(`世界书条目已就绪：${filePath}（已存在同名条目时不覆盖）。`);
+				return text(`世界书条目已就绪：${filePath}。`);
 			},
 			prepareInvocation: (options) => ({ invocationMessage: `新建世界书条目「${options.input.name}」` }),
 		}),
@@ -360,15 +357,13 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					throw new Error(`找不到章节「${options.input.chapter}」，可用相对路径、文件名或标题引用章节。`);
 				}
 				await library.removeChapter(book, chapter);
-				return text(`已删除第${chapter.seq}章「${chapter.title}」（含章节摘要镜像；如有 git 历史可恢复）。`);
+				return text(`已删除第${chapter.seq}章「${chapter.title}」。`);
 			},
 			prepareInvocation: (options) => ({
 				invocationMessage: `删除章节「${options.input.chapter}」`,
 				confirmationMessages: {
 					title: '删除章节',
-					message: new vscode.MarkdownString(
-						`确定删除章节「${options.input.chapter}」？文件将被删除（如有 git 历史可恢复）。`
-					),
+					message: new vscode.MarkdownString(`确定删除章节「${options.input.chapter}」？`),
 				},
 			}),
 		}),
@@ -382,7 +377,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				}
 				const newFileName = await library.renameChapter(book, chapter, options.input.newTitle);
 				return text(
-					`已重命名章节：${chapterRelPath({ fileName: newFileName, volumeDir: chapter.volumeDir })}（文件名、摘要镜像、相邻章导航链接与阅读进度已同步）。`
+					`已重命名章节：${chapterRelPath({ fileName: newFileName, volumeDir: chapter.volumeDir })}。`
 				);
 			},
 			prepareInvocation: (options) => ({
@@ -419,8 +414,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				confirmationMessages: {
 					title: '删除笔记',
 					message: new vscode.MarkdownString(
-						`确定删除笔记「${options.input.name}」${options.input.category ? `（分类：${options.input.category}）` : ''
-						}？文件将被删除（如有 git 历史可恢复）。`
+						`确定删除笔记「${options.input.name}」${options.input.category ? `（分类：${options.input.category}）` : ''}？`
 					),
 				},
 			}),
@@ -443,9 +437,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				invocationMessage: `删除角色卡「${options.input.name}」`,
 				confirmationMessages: {
 					title: '删除角色卡',
-					message: new vscode.MarkdownString(
-						`确定删除角色卡「${options.input.name}」？文件将被删除（如有 git 历史可恢复）。`
-					),
+					message: new vscode.MarkdownString(`确定删除角色卡「${options.input.name}」？`),
 				},
 			}),
 		}),
@@ -467,9 +459,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				invocationMessage: `删除世界书条目「${options.input.name}」`,
 				confirmationMessages: {
 					title: '删除世界书条目',
-					message: new vscode.MarkdownString(
-						`确定删除世界书条目「${options.input.name}」？文件将被删除（如有 git 历史可恢复）。`
-					),
+					message: new vscode.MarkdownString(`确定删除世界书条目「${options.input.name}」？`),
 				},
 			}),
 		})

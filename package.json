@@ -80,17 +80,17 @@
       {
         "view": "xReader.bookshelf",
         "when": "xReader.noLibrary",
-        "contents": "[选择书库目录](command:xReader.chooseLibraryPath)\n[导入 txt 小说](command:xReader.importBook)"
+        "contents": "[选择书库目录](command:xReader.chooseLibraryPath)\n[导入小说](command:xReader.importBook)\n[新建小说](command:xReader.newBook)"
       },
       {
         "view": "xReader.bookshelf",
         "when": "!xReader.noLibrary && xReader.noBooks",
-        "contents": "[导入 txt 小说](command:xReader.importBook)"
+        "contents": "[导入小说](command:xReader.importBook)\n[新建小说](command:xReader.newBook)"
       },
       {
         "view": "xReader.chapters",
         "when": "!xReader.noBook && xReader.emptyChapters",
-        "contents": "本书还没有章节，可在 章节/ 目录中新建 md 文件。"
+        "contents": "本书还没有章节，请先新建章节。"
       },
       {
         "view": "xReader.summaries",
@@ -124,6 +124,12 @@
         "title": "导入小说",
         "category": "X Reader",
         "icon": "$(file-add)"
+      },
+      {
+        "command": "xReader.newBook",
+        "title": "新建小说",
+        "category": "X Reader",
+        "icon": "$(new-folder)"
       },
       {
         "command": "xReader.openBook",
@@ -290,7 +296,7 @@
         "xReader.libraryPath": {
           "type": "string",
           "default": "",
-          "description": "小说库目录路径（每本书是其中一个文件夹）。留空后下次导入小说时会弹窗重新选择目录"
+          "description": "小说库目录路径（每本书一个文件夹）。留空后下次导入或新建小说时会弹窗重新选择目录"
         }
       }
     },
@@ -301,7 +307,7 @@
         "toolReferenceName": "listBooks",
         "canBeReferencedInPrompt": true,
         "icon": "$(book)",
-        "modelDescription": "列出小说库中的全部书籍（书文件夹名与章节数）。书以文件夹为单位组织，book 参数即书文件夹名。",
+        "modelDescription": "列出小说库中的全部书籍（书文件夹名与章节数）。书以文件夹为单位组织。",
         "inputSchema": {
           "type": "object",
           "properties": {}
@@ -406,7 +412,7 @@
             },
             "name": {
               "type": "string",
-              "description": "分卷名（如 第二卷；将作为目录名）"
+              "description": "分卷名，如 第二卷"
             }
           },
           "required": [
@@ -507,7 +513,7 @@
             },
             "newName": {
               "type": "string",
-              "description": "新书名（将成为新文件夹名）"
+              "description": "新书名"
             }
           },
           "required": [
@@ -552,11 +558,11 @@
             },
             "category": {
               "type": "string",
-              "description": "分类名（可选，留空则不分类）"
+              "description": "分类名"
             },
             "chapter": {
               "type": "string",
-              "description": "关联章节（可选）：章节相对路径、文件名或标题"
+              "description": "关联章节：章节相对路径、文件名或标题"
             }
           },
           "required": [
@@ -715,7 +721,7 @@
             },
             "name": {
               "type": "string",
-              "description": "笔记名称（文件名去扩展名）"
+              "description": "笔记名称（不含扩展名）"
             },
             "category": {
               "type": "string",
@@ -733,7 +739,7 @@
         "toolReferenceName": "deleteCharacter",
         "canBeReferencedInPrompt": true,
         "icon": "$(trash)",
-        "modelDescription": "删除 角色卡/ 下的角色卡 md。name 为角色名（文件名去扩展名）。删除前会向用户确认。",
+        "modelDescription": "删除 角色卡/ 下的角色卡 md。name 为角色名（不含扩展名）。删除前会向用户确认。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -757,7 +763,7 @@
         "toolReferenceName": "deleteWorldEntry",
         "canBeReferencedInPrompt": true,
         "icon": "$(trash)",
-        "modelDescription": "删除 世界书/ 下的条目 md。name 为条目名称（文件名去扩展名）。删除前会向用户确认。",
+        "modelDescription": "删除 世界书/ 下的条目 md。name 为条目名称（不含扩展名）。删除前会向用户确认。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -792,13 +798,18 @@
       "view/title": [
         {
           "command": "xReader.importBook",
-          "when": "view == xReader.bookshelf && !xReader.noLibrary && !xReader.noBooks",
+          "when": "view == xReader.bookshelf && !xReader.noLibrary",
           "group": "navigation@1"
+        },
+        {
+          "command": "xReader.newBook",
+          "when": "view == xReader.bookshelf && !xReader.noLibrary",
+          "group": "navigation@2"
         },
         {
           "command": "xReader.snapshot",
           "when": "view == xReader.bookshelf",
-          "group": "navigation@2"
+          "group": "navigation@3"
         },
         {
           "command": "xReader.refreshBookshelf",

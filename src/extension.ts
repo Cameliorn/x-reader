@@ -112,7 +112,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	// 旧版本（globalStorage 只读副本）数据不迁移，提示一次后清除
 	const legacy = context.globalState.get<unknown[]>('x-reader.books.v1');
 	if (legacy && legacy.length > 0) {
-		void vscode.window.showInformationMessage('X Reader 已升级为文件夹书库，旧书架数据不兼容，请重新导入 txt 小说。');
+		void vscode.window.showInformationMessage('X Reader 已升级为文件夹书库，旧书架数据不兼容，请重新导入小说。');
 		void context.globalState.update('x-reader.books.v1', undefined);
 	}
 
@@ -251,15 +251,24 @@ export function activate(context: vscode.ExtensionContext): void {
 			return;
 		}
 		const categories = await library.listNoteCategories(target);
-		const category = await vscode.window.showInputBox({
-			title: '新建笔记（2/3）',
-			prompt:
-				categories.length > 0
-					? `分类（可选，留空则不分类；现有：${categories.map((c) => c.name).join('、')}）`
-					: '分类（可选，留空则不分类）',
-		});
-		if (category === undefined) {
+		const categoryPicked = await vscode.window.showQuickPick(
+			[
+				{ label: '（不分类）', dirName: '' },
+				...categories.map((c) => ({ label: c.name, dirName: c.dirName })),
+				{ label: '$(add) 新建分类…', dirName: undefined },
+			],
+			{ title: '新建笔记（2/3）', placeHolder: '分类' }
+		);
+		if (!categoryPicked) {
 			return;
+		}
+		let categoryDir = categoryPicked.dirName;
+		if (categoryDir === undefined) {
+			const input = await vscode.window.showInputBox({ title: '新建笔记（2/3）', prompt: '分类' });
+			if (input === undefined) {
+				return;
+			}
+			categoryDir = input.trim();
 		}
 		const chapters = await library.listChapters(target);
 		const items: ({ label: string; description?: string; chapter?: ChapterFile })[] = [
@@ -268,12 +277,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		];
 		const picked = await vscode.window.showQuickPick(items, {
 			title: '新建笔记（3/3）',
-			placeHolder: '关联章节（可选，可输入筛选）',
+			placeHolder: '关联章节',
 		});
 		if (!picked) {
 			return;
 		}
-		const filePath = await library.createNote(target, name.trim(), category.trim() || undefined, picked.chapter);
+		const filePath = await library.createNote(target, name.trim(), categoryDir || undefined, picked.chapter);
 		await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 	};
 
@@ -283,7 +292,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		current: string,
 		action: (name: string) => Promise<unknown>
 	): Promise<void> => {
-		const name = await vscode.window.showInputBox({ title, value: current, prompt: '新名称（将同步更新文件名）' });
+		const name = await vscode.window.showInputBox({ title, value: current, prompt: '新名称' });
 		if (!name?.trim()) {
 			return;
 		}
@@ -347,12 +356,29 @@ export function activate(context: vscode.ExtensionContext): void {
 				await vscode.commands.executeCommand('xReader.openBook', imported[0].book.dir);
 			}
 		}),
+		vscode.commands.registerCommand('xReader.newBook', async () => {
+			const name = await vscode.window.showInputBox({
+				title: '新建小说',
+				prompt: '书名',
+			});
+			if (!name?.trim()) {
+				return;
+			}
+			try {
+				const book = await library.createBook(name.trim());
+				await vscode.commands.executeCommand('xReader.openBook', book.dir);
+			} catch (error) {
+				void vscode.window.showErrorMessage(
+					`新建失败：${error instanceof Error ? error.message : String(error)}`
+				);
+			}
+		}),
 		vscode.commands.registerCommand('xReader.openBook', async (bookDir?: string | BookInfo) => {
 			let dir = typeof bookDir === 'string' ? bookDir : (bookDir?.dir ?? library.getCurrentBook()?.dir);
 			if (!dir) {
 				const books = await library.listBooks();
 				if (books.length === 0) {
-					void vscode.window.showInformationMessage('小说库还是空的，请先导入 txt 小说。');
+					void vscode.window.showInformationMessage('小说库还是空的，请导入或新建小说。');
 					return;
 				}
 				const picked = await vscode.window.showQuickPick(
@@ -368,7 +394,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			const chapters = await library.listChapters(book);
 			if (chapters.length === 0) {
 				await library.setCurrentBook(dir);
-				void vscode.window.showInformationMessage('本书还没有章节，可在 章节/ 目录中新建 md 文件');
+				void vscode.window.showInformationMessage('本书还没有章节，请先新建章节。');
 				return;
 			}
 			const progress = library.getProgress(dir);
@@ -395,7 +421,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book) {
 				return;
 			}
-			if (await confirmDelete(`确定删除《${book.name}》？书文件夹将被删除（如有 git 历史可恢复）。`)) {
+			if (await confirmDelete(`确定删除《${book.name}》？`)) {
 				await library.removeBook(book);
 			}
 		}),
@@ -411,7 +437,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book || !chapter) {
 				return;
 			}
-			if (await confirmDelete(`确定删除章节「${chapter.title}」？（如有 git 历史可恢复）`)) {
+			if (await confirmDelete(`确定删除章节「${chapter.title}」？`)) {
 				await library.removeChapter(book, chapter);
 			}
 		}),
@@ -422,7 +448,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			const title = await vscode.window.showInputBox({
 				title: '重命名章节',
-				prompt: '新标题（将同步更新文件名、摘要镜像与导航链接）',
+				prompt: '新标题',
 				value: chapter.title,
 			});
 			if (!title?.trim()) {
@@ -468,21 +494,29 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			const name = await vscode.window.showInputBox({
 				title: '新建分卷',
-				prompt: '分卷名（将成为 章节/ 下的目录名）',
+				prompt: '分卷名',
 			});
 			if (!name?.trim()) {
 				return;
 			}
 			await library.createVolume(book, name.trim());
 		}),
-		vscode.commands.registerCommand('xReader.newChapter', async (volumeDir?: string) => {
+		vscode.commands.registerCommand('xReader.newChapter', async (volume?: ChapterVolume | string) => {
 			const book = library.getCurrentBook();
 			if (!book) {
 				return;
 			}
+			// 右键分卷传入对象/字符串；标题栏或命令面板触发时跟随章节视图选中的分卷
+			let volumeDir = typeof volume === 'string' ? volume : volume?.dirName;
+			if (volumeDir === undefined) {
+				const selected = chaptersView.selection[0];
+				if (selected && 'chapters' in selected) {
+					volumeDir = selected.dirName;
+				}
+			}
 			const title = await vscode.window.showInputBox({
 				title: '新建章节',
-				prompt: '章节标题（序号自动接续全局最大值）',
+				prompt: '章节标题',
 			});
 			if (!title?.trim()) {
 				return;
@@ -559,7 +593,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				if (!arg) {
 					return;
 				}
-				if (await confirmDelete(`确定删除「${arg.name}」？（如有 git 历史可恢复）`)) {
+				if (await confirmDelete(`确定删除「${arg.name}」？`)) {
 					await library.removeEntry(
 						{ name: path.basename(arg.bookDir), dir: arg.bookDir },
 						arg.subDir,
@@ -605,7 +639,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			const book = library.getCurrentBook();
 			if (!book) {
-				void vscode.window.showInformationMessage('请先在书架中选择一本书，再保存该书快照');
+				void vscode.window.showInformationMessage('请先在书架中选择一本书');
 				return;
 			}
 			const ok = await commitAll(

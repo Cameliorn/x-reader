@@ -11,6 +11,7 @@ import {
 	INTERVAL_SUMMARIES_DIR,
 	META_FILE,
 	NOTES_DIR,
+	uniqueBookName,
 	WORLD_DIR,
 } from './bookFactory';
 import { commitAll } from './git';
@@ -19,6 +20,7 @@ import {
 	buildChapterSummaryMarkdown,
 	buildEntryMarkdown,
 	buildIntervalSummaryMarkdown,
+	buildMetadataMarkdown,
 	buildNoteMarkdown,
 	chapterFileName,
 	chineseNumberToInt,
@@ -45,6 +47,9 @@ export {
 
 /** 区间摘要的章节数：每 10 章一个区间。 */
 export const INTERVAL_SUMMARY_SIZE = 10;
+
+/** 新建空书时创建的目录骨架（不含 章节/；放 .gitkeep 以便 git 跟踪）。 */
+const EMPTY_SUBDIRS = [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR];
 
 /** 章节在 章节/ 下的相对路径（分卷含目录名），用作进度键。 */
 export function chapterRelPath(chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): string {
@@ -321,6 +326,26 @@ export class LibraryService {
 			.filter((fileName) => fileName.endsWith('.md'))
 			.map((fileName) => ({ name: fileName.replace(/\.md$/, ''), fileName }))
 			.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** 新建空书：库根下创建书目录骨架（章节/ 与各空目录 + 元数据.md）并 git commit。 */
+	async createBook(name: string): Promise<BookInfo> {
+		const root = await this.ensureLibraryPath();
+		if (!root) {
+			throw new Error('未选择小说库目录');
+		}
+		const dirName = await uniqueBookName(root, sanitizeFileTitle(name));
+		const dir = path.join(root, dirName);
+		await fs.mkdir(path.join(dir, CHAPTERS_DIR), { recursive: true });
+		for (const sub of EMPTY_SUBDIRS) {
+			await fs.mkdir(path.join(dir, sub), { recursive: true });
+			await fs.writeFile(path.join(dir, sub, '.gitkeep'), '');
+		}
+		await fs.writeFile(path.join(dir, META_FILE), buildMetadataMarkdown(dirName, ''), 'utf8');
+		await commitAll(root, `新建《${dirName}》`);
+		await this.setCurrentBook(dir);
+		this._onDidChange.fire();
+		return { name: dirName, dir };
 	}
 
 	/** 导入 txt：解码 → 建书文件夹 → git commit。返回 undefined 表示用户未选库目录。 */
