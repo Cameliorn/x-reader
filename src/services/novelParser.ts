@@ -52,31 +52,94 @@ function detectUtf16(buf: Buffer): 'le' | 'be' | undefined {
 	return evenNul >= oddNul ? 'be' : 'le';
 }
 
+// 中文/阿拉伯数字字符类（匹配前已做全角→半角归一化）
+const CN_NUM = '0-9零〇一二两三四五六七八九十百千万拾佰仟';
 // 主模式：第X章 / 第X回 / 第X卷 / 第X节 等
-const CN_CHAPTER_RE = /^\s*第\s*([0-9零〇一二两三四五六七八九十百千万]+(?:\.[0-9]+)?)\s*([章节回卷部篇集话])\s*[：:、.．\-—\s]*(.*)$/;
+const CN_CHAPTER_RE = new RegExp(`^第\\s*[${CN_NUM}]+(?:\\.[0-9]+)?\\s*[章节回卷部篇集话]`);
+// 全X章（全本一章），如 "全一章"
+const QUAN_RE = new RegExp(`^全[${CN_NUM}]+章(?=$|[：:、.．\\-—\\s])`);
+// 第X天（日记式分章），单位词后须紧跟分隔符或结尾，防 "第三天他就…" 类正文
+const DAY_RE = new RegExp(`^第\\s*[${CN_NUM}]+\\s*天(?=$|[：:、.．\\-—\\s])`);
+// 卷X 风格标题，如 "卷一 风起"
+const VOLUME_RE = new RegExp(`^卷[${CN_NUM}]+(?=$|[：:、.．\\-—\\s])`);
 // 特殊章节名
-const SPECIAL_RE = /^\s*(序章|楔子|序言|前言|引子|番外|尾声|后记|后序)(?:[：:、.．\-—\s].*)?$/;
+const SPECIAL_RE = /^(序章|楔子|序言|前言|引子|序|尾声|终章|后记|后序|附录)(?=$|[：:、.．\-—\s])/;
+// 番外（可带编号），如 "番外一 日常" / "番外：初雪"
+const FANWAI_RE = new RegExp(`^番外(?:篇)?[${CN_NUM}]*(?=$|[：:、.．\\-—\\s])`);
 // 英文章节
-const EN_CHAPTER_RE = /^\s*chapter\s+([0-9]+)\s*[：:、.．\-—\s]*(.*)$/i;
+const EN_CHAPTER_RE = /^chapter\s+[0-9]+/i;
 // 纯数字编号标题，如 "1、初见"
-const NUM_TITLE_RE = /^\s*([0-9]{1,4})\s*[、.．]\s*\S+/;
+const NUM_TITLE_RE = /^[0-9]{1,4}\s*[、.．]\s*\S/;
+// ☆ 符号标题，如 "☆、变态之神（01）"
+const STAR_TITLE_RE = /^☆、\S+/;
+// Markdown 标题井号前缀（部分 txt 是 Markdown 导出，标题形如 ## 第一章）
+const MD_HEADING_RE = /^\s{0,3}#{1,6}\s*/;
+// 成对包裹标题的括号/书名号/加粗星号，如 【第一章】、**第二章**
+const WRAPPED_TITLE_RE = /^[【\[（(「『〈《*]+(.*?)[】\]）)」』〉》*]+$/;
+const FULLWIDTH_DIGIT_RE = /[０-９]/g;
+const ZERO_WIDTH_RE = new RegExp('[\\u200B-\\u200D\\uFEFF]', 'g');
+// 标题中不应出现的句子标点（，；？！…）；句读「。」仅允许在末尾（如 "第二章。"）
+const BODY_PUNCT_RE = /[，；？！…]|。(?!$)/;
+// 章/节等单位词后引入副标题的分隔符，如 "第一章：雨夜"
+const SUBTITLE_SEP_RE = /^[：:、.．\-—\s]/;
+
+/** 归一化标题行：去 Markdown 井号、成对包裹符号与零宽字符，全角数字转半角。 */
+function normalizeTitleLine(line: string): string {
+	let candidate = line.replace(MD_HEADING_RE, '').replace(ZERO_WIDTH_RE, '').trim();
+	const wrapped = WRAPPED_TITLE_RE.exec(candidate);
+	if (wrapped) {
+		candidate = wrapped[1].trim();
+	}
+	return candidate.replace(FULLWIDTH_DIGIT_RE, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+}
 
 function matchTitle(line: string): string | undefined {
-	if (line.length > 60) {
+	const candidate = normalizeTitleLine(line);
+	if (candidate.length === 0 || candidate.length > 60) {
 		return undefined; // 超长行按正文处理
 	}
-	if (CN_CHAPTER_RE.test(line) || SPECIAL_RE.test(line) || EN_CHAPTER_RE.test(line) || NUM_TITLE_RE.test(line)) {
-		return line.trim();
+	// 第X章 类：单位词后紧跟分隔符时信任副标题（可含标点）；直接连写时不允许句子标点（防 "第三部分，…" 类正文）
+	const cn = CN_CHAPTER_RE.exec(candidate);
+	if (cn) {
+		const rest = candidate.slice(cn[0].length);
+		return SUBTITLE_SEP_RE.test(rest) || !BODY_PUNCT_RE.test(candidate) ? candidate : undefined;
+	}
+	// 单位词/关键词后要求分隔符或结尾的模式，判定即信任
+	if (
+		QUAN_RE.test(candidate) ||
+		DAY_RE.test(candidate) ||
+		VOLUME_RE.test(candidate) ||
+		SPECIAL_RE.test(candidate) ||
+		FANWAI_RE.test(candidate) ||
+		EN_CHAPTER_RE.test(candidate)
+	) {
+		return candidate;
+	}
+	// 数字编号与 ☆ 符号标题：误伤面大，始终要求无句子标点
+	if ((NUM_TITLE_RE.test(candidate) || STAR_TITLE_RE.test(candidate)) && !BODY_PUNCT_RE.test(candidate)) {
+		return candidate;
 	}
 	return undefined;
 }
 
+// 卷标题（第X卷…）：作为分组标记，其后的章节归属该卷
+const VOLUME_TITLE_RE = new RegExp(`^第\\s*[${CN_NUM}]+\\s*卷`);
+
 /**
- * 按行解析章节目录。解析失败（无任何章节）时返回整书为单章。
- * 正文为空的标题（如书首目录页中重复的章节名、卷标题）会被丢弃。
+ * 按行解析章节目录，返回章节（可带所属卷 volumeName）。
+ * - 卷标题（第X卷…）作为分组标记：其后章节归属该卷，卷标题本身不产生章节。
+ * - 卷简介前置布局：无章节跟随且同名卷标题在之后作为正文卷再次出现的卷标题是书首简介块，被丢弃。
+ * - 正文为空的标题（书首目录页重复名、孤立的卷标）被丢弃。
+ * - 解析失败（无任何章节）时返回整书为单章。
  */
 export function parseChapters(text: string): Chapter[] {
 	const lines = text.split(/\r\n|\r|\n/);
+	interface Candidate {
+		title: string;
+		startLine: number;
+		endLine: number;
+		isVolume: boolean;
+	}
 	const starts: number[] = [];
 	const titles: string[] = [];
 	for (let i = 0; i < lines.length; i++) {
@@ -86,19 +149,59 @@ export function parseChapters(text: string): Chapter[] {
 			titles.push(title);
 		}
 	}
-	const chapters = starts.map((start, idx) => ({
-		title: titles[idx],
-		startLine: start,
-		endLine: idx + 1 < starts.length ? starts[idx + 1] - 1 : lines.length - 1,
-	})).filter((chapter) => hasBody(lines, chapter));
-	// 书首目录页与正文标题重复时，保留最后一次出现（正文中的）
-	const lastSeen = new Map<string, number>();
-	chapters.forEach((chapter, idx) => lastSeen.set(normalizeTitle(chapter.title), idx));
-	const deduped = chapters.filter((chapter, idx) => lastSeen.get(normalizeTitle(chapter.title)) === idx);
-	if (deduped.length === 0) {
+	const candidates: Candidate[] = [];
+	for (let idx = 0; idx < starts.length; idx++) {
+		const candidate: Candidate = {
+			title: titles[idx],
+			startLine: starts[idx],
+			endLine: idx + 1 < starts.length ? starts[idx + 1] - 1 : lines.length - 1,
+			isVolume: VOLUME_TITLE_RE.test(titles[idx]),
+		};
+		// 卷标题即使区间无正文也保留（其后紧跟章节标题时区间为空）；普通标题须有正文
+		if (candidate.isVolume || hasBody(lines, candidate)) {
+			candidates.push(candidate);
+		}
+	}
+	if (candidates.length === 0) {
 		return [{ title: '全文', startLine: 0, endLine: Math.max(0, lines.length - 1) }];
 	}
-	return deduped;
+	// 简介卷标题：无章节跟随（下一候选是卷标题或结尾）且同名卷标题在之后作为正文卷出现 → 书首简介块，丢弃
+	// 反向扫描一次：先见到正文卷标题（其后跟章节），再遇到同名无章节卷标题即为简介
+	const bodyVolumeSeen = new Set<string>();
+	const introSet = new Set<number>();
+	for (let i = candidates.length - 1; i >= 0; i--) {
+		const c = candidates[i];
+		if (!c.isVolume) {
+			continue;
+		}
+		const hasChapterAfter = i + 1 < candidates.length && !candidates[i + 1].isVolume;
+		if (hasChapterAfter) {
+			bodyVolumeSeen.add(normalizeTitle(c.title));
+		} else if (bodyVolumeSeen.has(normalizeTitle(c.title))) {
+			introSet.add(i);
+		}
+	}
+	const kept = candidates.filter((_, idx) => !introSet.has(idx));
+
+	// 卷标题作为分组标记，其后章节归属该卷；卷标题前的章节（前言等）无卷
+	let currentVolume: string | undefined;
+	const chapters: Chapter[] = [];
+	for (const candidate of kept) {
+		if (candidate.isVolume) {
+			currentVolume = candidate.title;
+			continue;
+		}
+		chapters.push({
+			title: candidate.title,
+			startLine: candidate.startLine,
+			endLine: candidate.endLine,
+			volumeName: currentVolume,
+		});
+	}
+	if (chapters.length === 0) {
+		return [{ title: '全文', startLine: 0, endLine: Math.max(0, lines.length - 1) }];
+	}
+	return chapters;
 }
 
 /** 标题行之后到下一标题之间是否存在非空正文行。 */
@@ -111,7 +214,7 @@ function hasBody(lines: string[], chapter: Chapter): boolean {
 	return false;
 }
 
-/** 目录去重用的标题规范化：去尾部页码与标点空白差异。 */
+/** 标题规范化（简介卷标题判定用）：去尾部页码与标点空白差异。 */
 function normalizeTitle(title: string): string {
 	return title
 		.replace(/\s*[.．·…—\-~]*\s*[0-9]{1,5}\s*$/, '')

@@ -1,0 +1,143 @@
+import * as vscode from 'vscode';
+import type { ChapterFile, ChapterVolume, IntervalSummary } from '../model/book';
+import { CHAPTER_SUMMARIES_DIR, chapterRelPath, INTERVAL_SUMMARIES_DIR, LibraryService } from '../services/library';
+import { LibraryTreeProvider } from './libraryTreeProvider';
+
+type SummaryChapter = ChapterFile & { hasSummary?: boolean };
+
+/** 顶层分组：章节摘要 / 区间摘要。 */
+interface GroupNode {
+	kind: 'chapterSummaries' | 'intervalSummaries';
+	description: string;
+}
+
+type SummaryNode = GroupNode | ChapterVolume | SummaryChapter | IntervalSummary;
+
+/** 摘要视图：顶层分 章节摘要（卷→章）与 区间摘要（每 10 章一个区间）两组，✓ 标记已建；点击打开（不存在则从模板创建）。 */
+export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
+	constructor(library: LibraryService) {
+		super(library);
+	}
+
+	async getChildren(element?: SummaryNode): Promise<SummaryNode[]> {
+		const book = this.library.getCurrentBook();
+		if (!book) {
+			return [];
+		}
+		if (element === undefined) {
+			const [volumes, keys, intervals] = await Promise.all([
+				this.library.listVolumes(book),
+				this.library.listChapterSummaryKeys(book),
+				this.library.listIntervalSummaries(book),
+			]);
+			const total = volumes.reduce((n, volume) => n + volume.chapters.length, 0);
+			if (total === 0) {
+				// 无章节时置空，让 viewsWelcome 的空态提示生效
+				return [];
+			}
+			const done = volumes.reduce(
+				(n, volume) => n + volume.chapters.filter((c) => keys.has(chapterRelPath(c))).length,
+				0
+			);
+			const intervalDone = intervals.filter((i) => i.exists).length;
+			return [
+				{ kind: 'chapterSummaries', description: `${done}/${total} 已建` },
+				{ kind: 'intervalSummaries', description: `${intervalDone}/${intervals.length} 已建` },
+			];
+		}
+		if ('kind' in element) {
+			if (element.kind === 'intervalSummaries') {
+				return this.library.listIntervalSummaries(book);
+			}
+			const [volumes, keys] = await Promise.all([
+				this.library.listVolumes(book),
+				this.library.listChapterSummaryKeys(book),
+			]);
+			return volumes.map((volume) => ({
+				...volume,
+				chapters: volume.chapters.map((chapter) => ({
+					...chapter,
+					hasSummary: keys.has(chapterRelPath(chapter)),
+				})),
+			}));
+		}
+		return 'chapters' in element && !('startSeq' in element) ? element.chapters : [];
+	}
+
+	getTreeItem(node: SummaryNode): vscode.TreeItem {
+		if ('kind' in node) {
+			return this.groupItem(node);
+		}
+		if ('startSeq' in node) {
+			return this.intervalItem(node);
+		}
+		return 'chapters' in node ? this.volumeItem(node) : this.chapterItem(node);
+	}
+
+	private groupItem(group: GroupNode): vscode.TreeItem {
+		const book = this.library.getCurrentBook();
+		const isChapter = group.kind === 'chapterSummaries';
+		const item = new vscode.TreeItem(isChapter ? '章节摘要' : '区间摘要', vscode.TreeItemCollapsibleState.Expanded);
+		item.id = book ? `${book.dir}/summaries/${group.kind}` : undefined;
+		item.iconPath = new vscode.ThemeIcon(isChapter ? 'note' : 'notebook');
+		item.contextValue = 'summaryGroup';
+		item.description = group.description;
+		return item;
+	}
+
+	private volumeItem(volume: ChapterVolume): vscode.TreeItem {
+		const book = this.library.getCurrentBook();
+		const item = new vscode.TreeItem(volume.name, vscode.TreeItemCollapsibleState.Expanded);
+		item.id = book ? `${book.dir}/${CHAPTER_SUMMARIES_DIR}/${volume.dirName ?? ''}` : undefined;
+		item.iconPath = new vscode.ThemeIcon('library');
+		item.contextValue = 'summaryVolume';
+		const done = volume.chapters.filter((c) => (c as SummaryChapter).hasSummary).length;
+		item.description = `${done}/${volume.chapters.length} 已建`;
+		return item;
+	}
+
+	private chapterItem(chapter: SummaryChapter): vscode.TreeItem {
+		const book = this.library.getCurrentBook();
+		const item = new vscode.TreeItem(chapter.title, vscode.TreeItemCollapsibleState.None);
+		item.id = book
+			? `${book.dir}/${CHAPTER_SUMMARIES_DIR}/${chapter.volumeDir ? chapter.volumeDir + '/' : ''}${chapter.fileName}`
+			: undefined;
+		item.iconPath = new vscode.ThemeIcon('note');
+		item.contextValue = 'chapterSummary';
+		item.description = chapter.hasSummary ? '✓' : undefined;
+		item.tooltip = chapter.hasSummary
+			? `${chapterRelPath(chapter)} · 摘要已建`
+			: `${chapterRelPath(chapter)} · 点击创建摘要`;
+		if (book) {
+			item.command = {
+				command: 'xReader.openChapterSummary',
+				title: '打开摘要',
+				arguments: [book.dir, chapter.volumeDir, chapter.fileName],
+			};
+		}
+		return item;
+	}
+
+	private intervalItem(interval: IntervalSummary): vscode.TreeItem {
+		const book = this.library.getCurrentBook();
+		const label =
+			interval.startSeq === interval.endSeq
+				? `第 ${interval.startSeq} 章`
+				: `第 ${interval.startSeq}–${interval.endSeq} 章`;
+		const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+		item.id = book ? `${book.dir}/${INTERVAL_SUMMARIES_DIR}/${interval.fileName}` : undefined;
+		item.iconPath = new vscode.ThemeIcon('notebook');
+		item.contextValue = 'intervalSummary';
+		item.description = interval.exists ? '✓' : undefined;
+		const chapterList = interval.chapters.map((c) => c.title).join('、');
+		item.tooltip = `${label}（${interval.chapters.length} 章）\n${chapterList}\n${interval.exists ? '摘要已建' : '点击创建摘要'}`;
+		if (book) {
+			item.command = {
+				command: 'xReader.openIntervalSummary',
+				title: '打开区间摘要',
+				arguments: [book.dir, interval],
+			};
+		}
+		return item;
+	}
+}

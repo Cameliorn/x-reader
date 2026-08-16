@@ -1,9 +1,9 @@
 {
   "name": "x-reader",
   "displayName": "X Reader",
-  "description": "在 VS Code 中以 Markdown 章节文件阅读小说，并与 Copilot 共创写作",
+  "description": "在 VS Code 中阅读小说，并与 Copilot 共创写作",
   "version": "0.1.0",
-  "publisher": "xieyuchen",
+  "publisher": "cameliorn",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -51,14 +51,8 @@
           "contextualTitle": "小说阅读"
         },
         {
-          "id": "xReader.chapterSummaries",
-          "name": "章节摘要",
-          "icon": "resources/activity-icon.svg",
-          "contextualTitle": "小说阅读"
-        },
-        {
-          "id": "xReader.intervalSummaries",
-          "name": "区间摘要",
+          "id": "xReader.summaries",
+          "name": "摘要",
           "icon": "resources/activity-icon.svg",
           "contextualTitle": "小说阅读"
         },
@@ -86,17 +80,12 @@
       {
         "view": "xReader.bookshelf",
         "when": "xReader.noLibrary",
-        "contents": "尚未配置小说库目录。\n[选择书库目录](command:xReader.chooseLibraryPath)\n[导入 txt 小说](command:xReader.importBook)"
+        "contents": "[选择书库目录](command:xReader.chooseLibraryPath)\n[导入 txt 小说](command:xReader.importBook)"
       },
       {
         "view": "xReader.bookshelf",
         "when": "!xReader.noLibrary && xReader.noBooks",
-        "contents": "小说库还是空的。\n[选择书库目录](command:xReader.chooseLibraryPath)\n[导入 txt 小说](command:xReader.importBook)"
-      },
-      {
-        "view": "xReader.chapters",
-        "when": "xReader.noBook",
-        "contents": "在书架中选择一本书开始阅读。"
+        "contents": "[导入 txt 小说](command:xReader.importBook)"
       },
       {
         "view": "xReader.chapters",
@@ -104,60 +93,24 @@
         "contents": "本书还没有章节，可在 章节/ 目录中新建 md 文件。"
       },
       {
-        "view": "xReader.chapterSummaries",
-        "when": "xReader.noBook",
-        "contents": "在书架中选择一本书开始阅读。"
-      },
-      {
-        "view": "xReader.chapterSummaries",
+        "view": "xReader.summaries",
         "when": "!xReader.noBook && xReader.emptyChapters",
         "contents": "本书还没有章节。"
-      },
-      {
-        "view": "xReader.intervalSummaries",
-        "when": "xReader.noBook",
-        "contents": "在书架中选择一本书开始阅读。"
-      },
-      {
-        "view": "xReader.intervalSummaries",
-        "when": "!xReader.noBook && xReader.emptyChapters",
-        "contents": "本书还没有章节。"
-      },
-      {
-        "command": "xReader.deleteEntry",
-        "title": "删除",
-        "category": "X Reader",
-        "icon": "$(trash)"
-      },
-      {
-        "view": "xReader.worldbook",
-        "when": "xReader.noBook",
-        "contents": "在书架中选择一本书开始阅读。"
       },
       {
         "view": "xReader.worldbook",
         "when": "!xReader.noBook && xReader.emptyWorld",
-        "contents": "还没有世界书条目。\n[新建世界书条目](command:xReader.newWorldEntry)"
-      },
-      {
-        "view": "xReader.characters",
-        "when": "xReader.noBook",
-        "contents": "在书架中选择一本书开始阅读。"
+        "contents": "[新建世界书条目](command:xReader.newWorldEntry)"
       },
       {
         "view": "xReader.characters",
         "when": "!xReader.noBook && xReader.emptyCards",
-        "contents": "还没有角色卡。\n[新建角色卡](command:xReader.newCharacterCard)"
-      },
-      {
-        "view": "xReader.notes",
-        "when": "xReader.noBook",
-        "contents": "在书架中选择一本书开始阅读。"
+        "contents": "[新建角色卡](command:xReader.newCharacterCard)"
       },
       {
         "view": "xReader.notes",
         "when": "!xReader.noBook && xReader.emptyNotes",
-        "contents": "还没有笔记。\n[新建笔记](command:xReader.newNote)"
+        "contents": "[新建笔记](command:xReader.newNote)"
       }
     ],
     "commands": [
@@ -207,6 +160,24 @@
         "icon": "$(trash)"
       },
       {
+        "command": "xReader.deleteEntry",
+        "title": "删除",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.deleteChapter",
+        "title": "删除章节",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.renameChapter",
+        "title": "重命名章节",
+        "category": "X Reader",
+        "icon": "$(edit)"
+      },
+      {
         "command": "xReader.newCharacterCard",
         "title": "新建角色卡",
         "category": "X Reader",
@@ -223,6 +194,72 @@
         "title": "新建笔记",
         "category": "X Reader",
         "icon": "$(note)"
+      },
+      {
+        "command": "xReader.newChapter",
+        "title": "新建章节",
+        "category": "X Reader",
+        "icon": "$(file-add)"
+      },
+      {
+        "command": "xReader.newVolume",
+        "title": "新建分卷",
+        "category": "X Reader",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "xReader.renameVolume",
+        "title": "重命名分卷",
+        "category": "X Reader",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "xReader.deleteVolume",
+        "title": "删除分卷",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.deleteChapterSummary",
+        "title": "删除章节摘要",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.deleteIntervalSummary",
+        "title": "删除区间摘要",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.renameNoteCategory",
+        "title": "重命名笔记分类",
+        "category": "X Reader",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "xReader.deleteNoteCategory",
+        "title": "删除笔记分类",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "xReader.renameBook",
+        "title": "重命名书籍",
+        "category": "X Reader",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "xReader.renameEntry",
+        "title": "重命名条目",
+        "category": "X Reader",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "xReader.renameNote",
+        "title": "重命名笔记",
+        "category": "X Reader",
+        "icon": "$(edit)"
       },
       {
         "command": "xReader.openChapterSummary",
@@ -258,6 +295,18 @@
       }
     },
     "languageModelTools": [
+      {
+        "name": "xReader_listBooks",
+        "displayName": "列出书籍",
+        "toolReferenceName": "listBooks",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(book)",
+        "modelDescription": "列出小说库中的全部书籍（书文件夹名与章节数）。书以文件夹为单位组织，book 参数即书文件夹名。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
       {
         "name": "xReader_listVolumes",
         "displayName": "列出分卷",
@@ -423,6 +472,50 @@
         }
       },
       {
+        "name": "xReader_deleteBook",
+        "displayName": "删除书籍",
+        "toolReferenceName": "deleteBook",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "modelDescription": "删除整本书文件夹及其全部章节、摘要、笔记等。name 为书文件夹名，删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "书文件夹名（必填）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameBook",
+        "displayName": "重命名书籍",
+        "toolReferenceName": "renameBook",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(edit)",
+        "modelDescription": "重命名书籍文件夹（书以文件夹为单位组织），元数据 title、当前选中书与阅读进度同步迁移。book 参数为目标书文件夹名，省略时使用当前书架选中的书；newName 为新书名。请勿用文件工具直接重命名书文件夹，否则会丢失阅读进度关联。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "要重命名的书文件夹名，省略时使用当前书架选中的书"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新书名（将成为新文件夹名）"
+            }
+          },
+          "required": [
+            "newName"
+          ]
+        }
+      },
+      {
         "name": "xReader_listNotes",
         "displayName": "列出笔记",
         "toolReferenceName": "listNotes",
@@ -455,7 +548,7 @@
             },
             "name": {
               "type": "string",
-              "description": "笔记名称（将成为文件名）"
+              "description": "笔记名称"
             },
             "category": {
               "type": "string",
@@ -504,7 +597,7 @@
             },
             "name": {
               "type": "string",
-              "description": "角色名（将成为文件名）"
+              "description": "角色名"
             }
           },
           "required": [
@@ -545,7 +638,136 @@
             },
             "name": {
               "type": "string",
-              "description": "条目名称（将成为文件名）"
+              "description": "条目名称"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteChapter",
+        "displayName": "删除章节",
+        "toolReferenceName": "deleteChapter",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "modelDescription": "删除某章及其章节摘要镜像（章节摘要/ 下同名 md）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            }
+          },
+          "required": [
+            "chapter"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameChapter",
+        "displayName": "重命名章节",
+        "toolReferenceName": "renameChapter",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(edit)",
+        "modelDescription": "重命名章节：序号不变，newTitle 作为新文件名，同步重命名章节摘要镜像、重写相邻章导航链接并迁移阅读进度。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            },
+            "newTitle": {
+              "type": "string",
+              "description": "新标题（将成为文件名中的标题部分）"
+            }
+          },
+          "required": [
+            "chapter",
+            "newTitle"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteNote",
+        "displayName": "删除笔记",
+        "toolReferenceName": "deleteNote",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "modelDescription": "删除笔记 md。笔记在分类下时须用 category 指定分类（分类名或目录名）。删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "笔记名称（文件名去扩展名）"
+            },
+            "category": {
+              "type": "string",
+              "description": "笔记所在分类（可选；未分类笔记省略）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteCharacter",
+        "displayName": "删除角色卡",
+        "toolReferenceName": "deleteCharacter",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "modelDescription": "删除 角色卡/ 下的角色卡 md。name 为角色名（文件名去扩展名）。删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "角色名"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteWorldEntry",
+        "displayName": "删除世界书条目",
+        "toolReferenceName": "deleteWorldEntry",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "modelDescription": "删除 世界书/ 下的条目 md。name 为条目名称（文件名去扩展名）。删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "条目名称"
             }
           },
           "required": [
@@ -558,19 +780,19 @@
       "editor/title": [
         {
           "command": "xReader.prevChapter",
-          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d{4}-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d+-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
           "group": "navigation@1"
         },
         {
           "command": "xReader.nextChapter",
-          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d{4}-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d+-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
           "group": "navigation@2"
         }
       ],
       "view/title": [
         {
           "command": "xReader.importBook",
-          "when": "view == xReader.bookshelf",
+          "when": "view == xReader.bookshelf && !xReader.noLibrary && !xReader.noBooks",
           "group": "navigation@1"
         },
         {
@@ -585,23 +807,78 @@
         },
         {
           "command": "xReader.newWorldEntry",
-          "when": "view == xReader.worldbook",
+          "when": "view == xReader.worldbook && !xReader.noBook && !xReader.emptyWorld",
           "group": "navigation@1"
         },
         {
           "command": "xReader.newCharacterCard",
-          "when": "view == xReader.characters",
+          "when": "view == xReader.characters && !xReader.noBook && !xReader.emptyCards",
           "group": "navigation@1"
         },
         {
           "command": "xReader.newNote",
-          "when": "view == xReader.notes",
+          "when": "view == xReader.notes && !xReader.noBook && !xReader.emptyNotes",
           "group": "navigation@1"
+        },
+        {
+          "command": "xReader.newChapter",
+          "when": "view == xReader.chapters && !xReader.noBook",
+          "group": "navigation@1"
+        },
+        {
+          "command": "xReader.newVolume",
+          "when": "view == xReader.chapters && !xReader.noBook",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
         {
-          "command": "xReader.openBook",
+          "command": "xReader.renameChapter",
+          "when": "view == xReader.chapters && viewItem == chapter",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteChapter",
+          "when": "view == xReader.chapters && viewItem == chapter",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.newChapter",
+          "when": "view == xReader.chapters && viewItem == volume",
+          "group": "0_new"
+        },
+        {
+          "command": "xReader.renameVolume",
+          "when": "view == xReader.chapters && viewItem == volume",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteVolume",
+          "when": "view == xReader.chapters && viewItem == volume",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.deleteChapterSummary",
+          "when": "view == xReader.summaries && viewItem == chapterSummary",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteIntervalSummary",
+          "when": "view == xReader.summaries && viewItem == intervalSummary",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.renameNoteCategory",
+          "when": "view == xReader.notes && viewItem == noteCategory",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteNoteCategory",
+          "when": "view == xReader.notes && viewItem == noteCategory",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.renameBook",
           "when": "view == xReader.bookshelf && viewItem == book",
           "group": "inline@1"
         },
@@ -621,19 +898,34 @@
           "group": "inline@4"
         },
         {
-          "command": "xReader.deleteEntry",
+          "command": "xReader.renameEntry",
           "when": "view == xReader.worldbook && viewItem == entry",
           "group": "inline@1"
         },
         {
-          "command": "xReader.deleteEntry",
+          "command": "xReader.renameEntry",
           "when": "view == xReader.characters && viewItem == entry",
           "group": "inline@1"
         },
         {
-          "command": "xReader.deleteEntry",
+          "command": "xReader.renameNote",
           "when": "view == xReader.notes && viewItem == note",
           "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteEntry",
+          "when": "view == xReader.worldbook && viewItem == entry",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.deleteEntry",
+          "when": "view == xReader.characters && viewItem == entry",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.deleteEntry",
+          "when": "view == xReader.notes && viewItem == note",
+          "group": "inline@2"
         }
       ]
     }

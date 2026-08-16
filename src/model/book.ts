@@ -6,6 +6,8 @@ export interface Chapter {
 	startLine: number;
 	/** 正文结束行号（含），即下一章标题行 - 1 */
 	endLine: number;
+	/** 所属卷（卷标题 第X卷… 原文）；undefined 表示无卷（导入时放章节目录根） */
+	volumeName?: string;
 }
 
 /** 库中的一本书：以文件夹为单位。 */
@@ -20,7 +22,7 @@ export interface BookInfo {
 export interface ChapterFile {
 	/** 序号（文件名前缀数字） */
 	seq: number;
-	/** 标题（文件名去序号与扩展名） */
+	/** 标题：优先取文件内容首行 `# 标题`，否则回退文件名（去序号与扩展名） */
 	title: string;
 	/** 文件名，如 0001-第一章.md */
 	fileName: string;

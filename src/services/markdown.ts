@@ -2,12 +2,21 @@
 export const CHAPTER_FILE_RE = /^(\d+)-(.+)\.md$/;
 
 const ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|]/g;
+const WINDOWS_RESERVED_NAME_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const MAX_TITLE_LENGTH = 50;
 
-/** 清洗标题为合法文件名片段。 */
+/** 清洗标题为合法文件名片段（含 Windows 保留名与尾部点/空格规避）。 */
 export function sanitizeFileTitle(title: string): string {
-	const cleaned = title.replace(ILLEGAL_FILENAME_CHARS, '').replace(/\s+/g, ' ').trim();
+	let cleaned = title.replace(ILLEGAL_FILENAME_CHARS, '').replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '');
+	if (WINDOWS_RESERVED_NAME_RE.test(cleaned)) {
+		cleaned = `${cleaned}_`;
+	}
 	return (cleaned || '未命名').slice(0, MAX_TITLE_LENGTH);
+}
+
+/** 转义 Markdown 链接文字中的方括号（标题含 [ ] 时不破坏链接语法）。 */
+export function escapeMdLinkText(text: string): string {
+	return text.replace(/[[\]]/g, '\\$&');
 }
 
 export function chapterFileName(seq: number, title: string): string {
@@ -20,6 +29,40 @@ export function parseChapterFileName(fileName: string): { seq: number; title: st
 		return undefined;
 	}
 	return { seq: Number.parseInt(match[1], 10), title: match[2] };
+}
+
+/** 章间导航相对路径：从 from 卷的文件所在目录指向 to 章文件（同卷为文件名，跨卷用 ../）。 */
+export function navRelPath(fromVolume: string | undefined, toVolume: string | undefined, toFileName: string): string {
+	if ((fromVolume ?? '') === (toVolume ?? '')) {
+		return toFileName;
+	}
+	if (fromVolume === undefined) {
+		return `${toVolume}/${toFileName}`;
+	}
+	return toVolume === undefined ? `../${toFileName}` : `../${toVolume}/${toFileName}`;
+}
+
+const PREV_NAV_RE = /^\[← 上一章\]\(<[^>]*>\)/m;
+const NEXT_NAV_RE = /\[下一章 →\]\(<[^>]*>\)$/m;
+
+/** 重写章节 md 底部导航链接：prev/next 为目标路径（相对当前文件），undefined 表示移除对应链接。仅匹配独立导航行（行首 prev / 行尾 next），不动正文中的内联同名链接。 */
+export function updateChapterNav(md: string, prev?: string, next?: string): string {
+	let out = md;
+	if (prev !== undefined) {
+		out = out.replace(PREV_NAV_RE, () => `[← 上一章](<${prev}>)`);
+	} else {
+		out = out.replace(/^\[← 上一章\]\(<[^>]*>\)[ \t]*·[ \t]*/m, '');
+		out = out.replace(PREV_NAV_RE, '');
+	}
+	if (next !== undefined) {
+		out = out.replace(NEXT_NAV_RE, () => `[下一章 →](<${next}>)`);
+	} else {
+		out = out.replace(/[ \t]*·[ \t]*\[下一章 →\]\(<[^>]*>\)$/m, '');
+		out = out.replace(NEXT_NAV_RE, '');
+	}
+	// 两个链接都移除后清理空的导航段（--- 行）
+	out = out.replace(/\n---\n\s*$/, '\n');
+	return out;
 }
 
 const CN_DIGIT: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
@@ -50,18 +93,25 @@ export function chineseNumberToInt(text: string): number | undefined {
 	return total + current;
 }
 
-/** 生成章节 md：# 标题 + 段落空行 + 底部上一章/下一章导航（尖括号包裹以兼容含空格文件名）。 */
-export function buildChapterMarkdown(title: string, body: string, prevFile?: string, nextFile?: string): string {
+/** 从 markdown 首行提取一级标题（`# 标题`，兼容 `#标题`）；二级标题/正文返回 undefined。 */
+export function extractMarkdownTitle(firstLine: string): string | undefined {
+	const match = /^#(?!#)\s*(.+)$/.exec(firstLine);
+	const title = match?.[1]?.trim();
+	return title ? title : undefined;
+}
+
+/** 生成章节 md：# 标题 + 段落空行 + 底部上一章/下一章导航（相对 章节/ 的相对路径，尖括号包裹以兼容含空格文件名）。 */
+export function buildChapterMarkdown(title: string, body: string, prevRelPath?: string, nextRelPath?: string): string {
 	const paragraphs = body
 		.split(/\r\n|\r|\n/)
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0);
 	const links: string[] = [];
-	if (prevFile) {
-		links.push(`[← 上一章](<${prevFile}>)`);
+	if (prevRelPath) {
+		links.push(`[← 上一章](<${prevRelPath}>)`);
 	}
-	if (nextFile) {
-		links.push(`[下一章 →](<${nextFile}>)`);
+	if (nextRelPath) {
+		links.push(`[下一章 →](<${nextRelPath}>)`);
 	}
 	const nav = links.length > 0 ? `\n---\n${links.join(' · ')}\n` : '';
 	return `# ${title}\n\n${paragraphs.join('\n\n')}\n\n${nav}`;
@@ -134,7 +184,7 @@ export function buildNoteMarkdown(name: string, chapter?: NoteChapterLink): stri
 		'',
 		`# ${name}`,
 		'',
-		`> 关联章节：[${chapter.title}](<${chapter.href}>)`,
+		`> 关联章节：[${escapeMdLinkText(chapter.title)}](<${chapter.href}>)`,
 		'',
 		'',
 	].join('\n');

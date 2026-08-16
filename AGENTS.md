@@ -26,8 +26,7 @@ extension.ts          — 入口（activate），注册命令、树视图与阅�
   ├── views/          — 树视图层
   │   ├── bookshelfProvider.ts        — 书架视图
   │   ├── chapterProvider.ts          — 章节目录视图
-  │   ├── chapterSummaryProvider.ts   — 章节摘要视图（卷→章，✓ 标记已建）
-  │   ├── intervalSummaryProvider.ts  — 区间摘要视图（每 10 章一个区间）
+  │   ├── summaryProvider.ts          — 摘要视图（顶层分 章节摘要（卷→章）/ 区间摘要（每 10 章一个区间），✓ 标记已建）
   │   ├── entryProvider.ts            — 世界书/角色卡视图
   │   └── noteProvider.ts             — 笔记视图（分类目录 + 未分类笔记）
   └── test/           — 测试（*.test.ts，Mocha TDD + @vscode/test-cli）
@@ -42,7 +41,7 @@ extension.ts          — 入口（activate），注册命令、树视图与阅�
 - 每本书是 `xReader.libraryPath` 下的一个文件夹，包含 `元数据.md` 与 `章节/`、`世界书/`、`角色卡/`、`章节摘要/`、`区间摘要/`、`笔记/` 目录。
 - `章节摘要/` 镜像 `章节/` 的分卷结构（同名 `NNNN-标题.md`）；`区间摘要/` 每 10 章一个文件（`NNNN-MMMM.md`，序号取区间首尾章节）；两者点击视图项时按需从模板创建。
 - `笔记/` 支持分类子目录（即分类）；笔记可用 frontmatter `chapter` 字段（章节相对路径）关联章节，也可完全独立。
-- **Agent 工具**（`vscode.lm.registerTool`，声明于 `contributes.languageModelTools`）：`xReader_listVolumes` / `xReader_listChapters` / `xReader_readChapterSummary` / `xReader_readIntervalSummary` / `xReader_createVolume` / `xReader_renameVolume` / `xReader_deleteVolume` / `xReader_listNotes` / `xReader_createNote` / `xReader_listCharacters` / `xReader_createCharacter` / `xReader_listWorldEntries` / `xReader_createWorldEntry`。章节正文与文件内容的读写搜索直接用内置文件工具；agent 经工具的写操作会做一次 git checkpoint 提交。
+- **Agent 工具**（`vscode.lm.registerTool`，声明于 `contributes.languageModelTools`）：`xReader_listBooks` / `xReader_listVolumes` / `xReader_listChapters` / `xReader_readChapterSummary` / `xReader_readIntervalSummary` / `xReader_createVolume` / `xReader_renameVolume` / `xReader_deleteVolume` / `xReader_deleteBook` / `xReader_renameBook` / `xReader_renameChapter` / `xReader_deleteChapter` / `xReader_listNotes` / `xReader_createNote` / `xReader_deleteNote` / `xReader_listCharacters` / `xReader_createCharacter` / `xReader_deleteCharacter` / `xReader_listWorldEntries` / `xReader_createWorldEntry` / `xReader_deleteWorldEntry`。章节正文与文件内容的读写搜索直接用内置文件工具；写操作在 LibraryService 层统一做 git 快照提交。
 - `.vscodeignore` 排除了 `src/`（含测试）与构建文件 — 运行时代码位于 `dist/`。
 
 ## 注意事项

@@ -1,8 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { BookInfo } from '../model/book';
-import { buildChapterMarkdown, buildMetadataMarkdown, chapterFileName, sanitizeFileTitle } from './markdown';
-import { getChapterText, parseChapters } from './novelParser';
+import { buildChapterMarkdown, buildMetadataMarkdown, chapterFileName, navRelPath, sanitizeFileTitle } from './markdown';
+import { parseChapters } from './novelParser';
 
 export const CHAPTERS_DIR = '章节';
 export const WORLD_DIR = '世界书';
@@ -32,12 +32,41 @@ export async function createBookFromText(
 	await fs.writeFile(path.join(dir, META_FILE), buildMetadataMarkdown(name, sourceFileName), 'utf8');
 
 	const chapters = parseChapters(text);
-	const fileNames = chapters.map((chapter, i) => chapterFileName(i + 1, chapter.title));
-	for (let i = 0; i < chapters.length; i++) {
-		const body = getChapterText(text, chapters[i]);
-		const md = buildChapterMarkdown(chapters[i].title, body, fileNames[i - 1], fileNames[i + 1]);
-		await fs.writeFile(path.join(dir, CHAPTERS_DIR, fileNames[i]), md, 'utf8');
+	const lines = text.split(/\r\n|\r|\n/);
+	// 两级目录：章节文件按卷放入 章节/<卷名>/ 子目录；卷名前的章节（前言等）放章节目录根
+	const volumeDirOf = (chapter: { volumeName?: string }): string | undefined =>
+		chapter.volumeName ? sanitizeFileTitle(chapter.volumeName) : undefined;
+	const volumeDirs = new Set<string>();
+	for (const chapter of chapters) {
+		const volumeDir = volumeDirOf(chapter);
+		if (volumeDir) {
+			volumeDirs.add(volumeDir);
+		}
 	}
+	for (const volumeDir of volumeDirs) {
+		await fs.mkdir(path.join(dir, CHAPTERS_DIR, volumeDir), { recursive: true });
+	}
+	// 全局顺序编号；跨卷导航用相对当前文件的路径（同卷为文件名，跨卷用 ../）
+	const relPaths = chapters.map((chapter, i) => {
+		const volumeDir = volumeDirOf(chapter);
+		const fileName = chapterFileName(i + 1, chapter.title);
+		return volumeDir ? `${volumeDir}/${fileName}` : fileName;
+	});
+	await Promise.all(
+		chapters.map(async (chapter, i) => {
+			const end = Math.min(chapter.endLine, lines.length - 1);
+			const body = lines.slice(chapter.startLine + 1, end + 1).join('\n');
+			const fromVolume = volumeDirOf(chapter);
+			const prevNav =
+				i > 0 ? navRelPath(fromVolume, volumeDirOf(chapters[i - 1]), chapterFileName(i, chapters[i - 1].title)) : undefined;
+			const nextNav =
+				i < chapters.length - 1
+					? navRelPath(fromVolume, volumeDirOf(chapters[i + 1]), chapterFileName(i + 2, chapters[i + 1].title))
+					: undefined;
+			const md = buildChapterMarkdown(chapter.title, body, prevNav, nextNav);
+			await fs.writeFile(path.join(dir, CHAPTERS_DIR, relPaths[i]), md, 'utf8');
+		})
+	);
 	return { book: { name, dir }, chapterCount: chapters.length };
 }
 

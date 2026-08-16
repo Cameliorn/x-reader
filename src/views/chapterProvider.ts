@@ -1,16 +1,14 @@
 import * as vscode from 'vscode';
 import type { ChapterFile, ChapterVolume } from '../model/book';
 import { chapterRelPath, CHAPTERS_DIR, LibraryService } from '../services/library';
+import { LibraryTreeProvider } from './libraryTreeProvider';
 
 type ChapterNode = ChapterVolume | ChapterFile;
 
 /** 章节目录视图：按卷分组展示当前书的章节文件，● 标记上次读到。 */
-export class ChapterProvider implements vscode.TreeDataProvider<ChapterNode> {
-	private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
-	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
-
-	constructor(private readonly library: LibraryService) {
-		library.onDidChange(() => this._onDidChangeTreeData.fire());
+export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
+	constructor(library: LibraryService) {
+		super(library);
 	}
 
 	async getChildren(element?: ChapterNode): Promise<ChapterNode[]> {
@@ -45,7 +43,8 @@ export class ChapterProvider implements vscode.TreeDataProvider<ChapterNode> {
 		const item = new vscode.TreeItem(volume.name, vscode.TreeItemCollapsibleState.Expanded);
 		item.id = book ? `${book.dir}/${CHAPTERS_DIR}/${volume.dirName ?? ''}` : undefined;
 		item.iconPath = new vscode.ThemeIcon('library');
-		item.contextValue = 'volume';
+		// 虚拟默认卷（根目录章节）无真实目录，不提供重命名/删除
+		item.contextValue = volume.dirName ? 'volume' : 'volumeRoot';
 		item.description = `${volume.chapters.length} 章`;
 		return item;
 	}

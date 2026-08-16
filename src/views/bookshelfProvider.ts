@@ -1,18 +1,17 @@
 import * as vscode from 'vscode';
 import type { BookInfo } from '../model/book';
 import { LibraryService } from '../services/library';
+import { LibraryTreeProvider } from './libraryTreeProvider';
 
-export class BookshelfProvider implements vscode.TreeDataProvider<BookInfo> {
-	private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
-	readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
-
+export class BookshelfProvider extends LibraryTreeProvider<BookInfo> {
 	private chapterCounts = new Map<string, number>();
 
-	constructor(private readonly library: LibraryService) {
-		library.onDidChange(() => {
-			this.chapterCounts.clear();
-			this._onDidChangeTreeData.fire();
-		});
+	constructor(library: LibraryService) {
+		super(library);
+	}
+
+	protected onLibraryChanged(): void {
+		this.chapterCounts.clear();
 	}
 
 	async getChildren(element?: BookInfo): Promise<BookInfo[]> {
