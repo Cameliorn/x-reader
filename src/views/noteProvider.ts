@@ -50,7 +50,7 @@ export class NoteProvider extends LibraryTreeProvider<NoteNode> {
 		item.id = book ? `${book.dir}/${NOTES_DIR}/${category.dirName}` : undefined;
 		item.iconPath = new vscode.ThemeIcon('folder');
 		item.contextValue = 'noteCategory';
-		item.tooltip = `分类：${category.dirName}`;
+		item.tooltip = vscode.l10n.t('Category: {0}', category.dirName);
 		return item;
 	}
 
@@ -62,7 +62,7 @@ export class NoteProvider extends LibraryTreeProvider<NoteNode> {
 		item.tooltip = `${note.subDir}/${note.fileName}`;
 		item.command = {
 			command: 'xReader.openEntry',
-			title: '打开笔记',
+			title: vscode.l10n.t('Open Note'),
 			arguments: [note.bookDir, note.subDir, note.fileName],
 		};
 		return item;

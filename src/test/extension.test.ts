@@ -490,6 +490,71 @@ suite('LibraryService 写操作', () => {
 		}
 	});
 
+	test('renameChapter 同步内容首行标题，文件名不变时也纠正首行', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const chapters = await service.listChapters(book);
+			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
+			const mid = chapters[1];
+			// 常规重命名：文件名与内容首行一起更新（首行保留输入原文，半角冒号仅从文件名清洗掉）
+			await service.renameChapter(book, mid, '第2章 新乙:改');
+			const newFileName = '0002-第2章 新乙改.md';
+			assert.ok(await exists(path.join(volDir, newFileName)));
+			assert.ok(!(await exists(path.join(volDir, mid.fileName))));
+			const md = await fs.readFile(path.join(volDir, newFileName), 'utf8');
+			assert.ok(md.startsWith('# 第2章 新乙:改\n'));
+			// 文件名清洗后不变时，仍纠正内容首行（如只改了标题行未改文件名）
+			const last = chapters[2];
+			const lastPath = path.join(volDir, last.fileName);
+			const raw = await fs.readFile(lastPath, 'utf8');
+			await fs.writeFile(lastPath, raw.replace(/^# .*/m, '# 第3章 丙乱改'), 'utf8');
+			await service.renameChapter(book, last, '第3章 丙');
+			const lastMd = await fs.readFile(lastPath, 'utf8');
+			assert.ok(lastMd.startsWith('# 第3章 丙\n'));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('syncChapterTitle 内容首行改名后同步文件名、导航、摘要与进度', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const chapters = await service.listChapters(book);
+			const mid = chapters[1];
+			await service.ensureChapterSummary(book, mid);
+			await service.setProgress(book.dir, chapterRelPath(mid));
+			// 模拟直接改首行保存：内容标题变了，文件名未变
+			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
+			const midPath = path.join(volDir, mid.fileName);
+			const raw = await fs.readFile(midPath, 'utf8');
+			await fs.writeFile(midPath, raw.replace(/^# .*/m, '# 第2章 新乙'), 'utf8');
+
+			const changed = await service.syncChapterTitle(book, mid, '第2章 新乙');
+			assert.ok(changed);
+			const newFileName = '0002-第2章 新乙.md';
+			assert.ok(await exists(path.join(volDir, newFileName)));
+			assert.ok(!(await exists(midPath)));
+			assert.ok((await fs.readFile(path.join(volDir, newFileName), 'utf8')).startsWith('# 第2章 新乙\n'));
+			const prevMd = await fs.readFile(path.join(volDir, chapters[0].fileName), 'utf8');
+			assert.ok(prevMd.includes(`[下一章 →](<${newFileName}>)`));
+			const nextMd = await fs.readFile(path.join(volDir, chapters[2].fileName), 'utf8');
+			assert.ok(nextMd.includes(`[← 上一章](<${newFileName}>)`));
+			assert.strictEqual(service.getProgress(book.dir), `第一卷/${newFileName}`);
+			assert.ok(await exists(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', newFileName)));
+			// 标题与文件名一致时不再重命名
+			assert.strictEqual(
+				await service.syncChapterTitle(book, { fileName: newFileName, volumeDir: '第一卷' }, '第2章 新乙'),
+				false
+			);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('removeChapter 重写相邻导航、删除摘要镜像、迁移进度并移除笔记关联', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {

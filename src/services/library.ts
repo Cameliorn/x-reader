@@ -113,6 +113,8 @@ export class LibraryService {
 	private watcher: vscode.FileSystemWatcher | undefined;
 	private watcherRoot = '';
 	private debounce: ReturnType<typeof setTimeout> | undefined;
+	/** 防抖期内内容标题可能已变更、待同步文件名的章节文件路径。 */
+	private pendingChapterSync = new Set<string>();
 
 	constructor(private readonly context: vscode.ExtensionContext) {
 		this.ensureWatcher();
@@ -147,8 +149,8 @@ export class LibraryService {
 			return existing;
 		}
 		const picked = await vscode.window.showOpenDialog({
-			title: '选择小说库目录',
-			openLabel: '选择',
+			title: vscode.l10n.t('Choose Library Folder'),
+			openLabel: vscode.l10n.t('Choose'),
 			canSelectFiles: false,
 			canSelectFolders: true,
 			canSelectMany: false,
@@ -563,22 +565,25 @@ export class LibraryService {
 		if (seq === undefined) {
 			throw new Error(`「${chapter.fileName}」不是章节文件`);
 		}
-		// 统一用清洗后的标题，保证文件名、摘要标题与笔记链接文字一致
+		// 文件名标题用清洗版；内容首行保留输入原文，与直接改首行的最终状态一致
 		const title = sanitizeFileTitle(newTitle);
+		const displayTitle = newTitle.trim() || title;
 		const newFileName = chapterFileName(seq, title);
+		const volumeDir = chapter.volumeDir ?? '';
+		const oldPath = path.join(book.dir, CHAPTERS_DIR, volumeDir, chapter.fileName);
 		if (newFileName === chapter.fileName) {
+			// 文件名不变时也同步内容首行，保证显示标题与输入一致
+			await this.updateChapterContentTitle(oldPath, displayTitle);
 			return chapter.fileName;
 		}
-		const volumeDir = chapter.volumeDir ?? '';
 		const newPath = path.join(book.dir, CHAPTERS_DIR, volumeDir, newFileName);
 		if (await pathExists(newPath)) {
 			throw new Error(`章节「${newFileName}」已存在`);
 		}
 		// 用 workspace.fs 重命名，让打开的编辑器跟随新路径
-		await vscode.workspace.fs.rename(
-			vscode.Uri.file(path.join(book.dir, CHAPTERS_DIR, volumeDir, chapter.fileName)),
-			vscode.Uri.file(newPath)
-		);
+		await vscode.workspace.fs.rename(vscode.Uri.file(oldPath), vscode.Uri.file(newPath));
+		// 同步内容首行标题，保证显示标题与文件名一致
+		await this.updateChapterContentTitle(newPath, displayTitle);
 		try {
 			await vscode.workspace.fs.rename(
 				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, volumeDir, chapter.fileName)),
@@ -609,6 +614,33 @@ export class LibraryService {
 		}
 		this._onDidChange.fire();
 		return newFileName;
+	}
+
+	/** 更新章节文件内容首行的一级标题（无标题行时跳过）。 */
+	private async updateChapterContentTitle(filePath: string, title: string): Promise<void> {
+		try {
+			const md = await fs.readFile(filePath, 'utf8');
+			const updated = md.replace(/^\uFEFF?#(?!#)\s*.*$/m, `# ${title}`);
+			if (updated !== md) {
+				await fs.writeFile(filePath, updated, 'utf8');
+			}
+		} catch {
+			// 文件不可读（刚被移动/删除）时忽略
+		}
+	}
+
+	/** 章节内容首行标题与文件名不一致时级联重命名（直接改首行与右键重命名效果一致）；返回是否发生重命名。 */
+	async syncChapterTitle(
+		book: BookInfo,
+		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		contentTitle: string
+	): Promise<boolean> {
+		const parsed = parseChapterFileName(chapter.fileName);
+		if (!parsed || sanitizeFileTitle(contentTitle) === parsed.title) {
+			return false;
+		}
+		const newFileName = await this.renameChapter(book, chapter, contentTitle);
+		return newFileName !== chapter.fileName;
 	}
 
 	/** 重命名书文件夹，迁移当前书与阅读进度；返回新书信息。 */
@@ -1031,13 +1063,68 @@ export class LibraryService {
 		this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.md'));
 		const onEvent = (uri: vscode.Uri): void => {
 			this.chapterTitleCache.delete(uri.fsPath);
+			if (this.isChapterFile(uri.fsPath)) {
+				this.pendingChapterSync.add(uri.fsPath);
+			}
 			if (this.debounce) {
 				clearTimeout(this.debounce);
 			}
-			this.debounce = setTimeout(() => this._onDidChange.fire(), 300);
+			this.debounce = setTimeout(() => {
+				void this.flushPendingChapterSync();
+				this._onDidChange.fire();
+			}, 300);
 		};
 		this.watcher.onDidCreate(onEvent);
 		this.watcher.onDidChange(onEvent);
 		this.watcher.onDidDelete(onEvent);
+	}
+
+	/** 处理防抖期内内容标题可能变更的章节：首行标题与文件名不一致时级联重命名。 */
+	private async flushPendingChapterSync(): Promise<void> {
+		const pending = [...this.pendingChapterSync];
+		this.pendingChapterSync.clear();
+		for (const filePath of pending) {
+			const parsed = this.parseChapterFile(filePath);
+			if (!parsed) {
+				continue;
+			}
+			const contentTitle = await this.readChapterContentTitle(filePath);
+			if (!contentTitle) {
+				continue;
+			}
+			try {
+				await this.syncChapterTitle(
+					{ name: path.basename(parsed.bookDir), dir: parsed.bookDir },
+					{ fileName: parsed.fileName, volumeDir: parsed.volumeDir },
+					contentTitle
+				);
+			} catch {
+				// 重命名失败（如目标名已存在）时保持现状，交由用户处理
+			}
+		}
+	}
+
+	private isChapterFile(filePath: string): boolean {
+		return this.parseChapterFile(filePath) !== undefined;
+	}
+
+	/** 解析 章节/ 目录下的章节文件路径；非章节文件返回 undefined。 */
+	private parseChapterFile(
+		filePath: string
+	): { bookDir: string; volumeDir: string | undefined; fileName: string } | undefined {
+		const segments = filePath.split(path.sep);
+		const idx = segments.lastIndexOf(CHAPTERS_DIR);
+		if (idx < 0 || (idx !== segments.length - 2 && idx !== segments.length - 3)) {
+			return undefined;
+		}
+		const fileName = segments[segments.length - 1];
+		if (!parseChapterFileName(fileName)) {
+			return undefined;
+		}
+		return {
+			bookDir: segments.slice(0, idx).join(path.sep),
+			volumeDir: idx === segments.length - 3 ? segments[idx + 1] : undefined,
+			fileName,
+		};
 	}
 }

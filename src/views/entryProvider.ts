@@ -36,7 +36,7 @@ export class EntryProvider extends LibraryTreeProvider<EntryNode> {
 		item.tooltip = `${entry.subDir}/${entry.fileName}`;
 		item.command = {
 			command: 'xReader.openEntry',
-			title: '打开',
+			title: vscode.l10n.t('Open'),
 			arguments: [entry.bookDir, entry.subDir, entry.fileName],
 		};
 		return item;

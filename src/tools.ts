@@ -18,19 +18,42 @@ import {
 const text = (value: string): vscode.LanguageModelToolResult =>
 	new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(value)]);
 
+/** 书中已知子目录：活动编辑器位于其中任意一层时即可定位所属书。 */
+const BOOK_SUBDIRS = [CHAPTERS_DIR, WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR];
+
+/** 从活动编辑器路径解析所属书（书内任意文件）与相对路径；非库内文件返回 undefined。 */
+function bookFromEditorPath(editorPath: string, books: BookInfo[]): { book: BookInfo; fileRel: string } | undefined {
+	const segments = editorPath.split(path.sep);
+	const knownIdx = BOOK_SUBDIRS.map((d) => segments.lastIndexOf(d)).filter((i) => i >= 0);
+	const dirIdx = knownIdx.length > 0 ? Math.max(...knownIdx) : segments.length - 1;
+	const book = books.find((b) => b.dir === segments.slice(0, dirIdx).join(path.sep));
+	if (!book) {
+		return undefined;
+	}
+	return { book, fileRel: path.relative(book.dir, editorPath).split(path.sep).join('/') };
+}
+
 /** 解析目标书：指定 book（书文件夹名）时用之，否则用当前书架选中的书。 */
 async function resolveBook(library: LibraryService, name?: string): Promise<BookInfo> {
 	if (name) {
 		const books = await library.listBooks();
 		const found = books.find((b) => b.name === name);
 		if (!found) {
-			throw new Error(`找不到书「${name}」。现有：${books.map((b) => b.name).join('、') || '（空）'}`);
+			throw new Error(
+				vscode.l10n.t(
+					'Book “{0}” not found. Existing: {1}',
+					name,
+					books.map((b) => b.name).join('、') || vscode.l10n.t('(empty)')
+				)
+			);
 		}
 		return found;
 	}
 	const current = library.getCurrentBook();
 	if (!current) {
-		throw new Error('当前没有选中的书；请先在书架中选择一本书，或用 book 参数指定书文件夹名。');
+		throw new Error(
+			vscode.l10n.t('No book selected. Select one in the bookshelf, or pass a book folder name via the book parameter.')
+		);
 	}
 	return current;
 }
@@ -84,7 +107,100 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				);
 				return text(`小说库（书文件夹名｜章节数）：\n${lines.join('\n')}`);
 			},
-			prepareInvocation: () => ({ invocationMessage: '列出书籍' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Books') }),
+		}),
+
+		vscode.lm.registerTool<{ name: string }>('xReader_createBook', {
+			async invoke(options) {
+				const name = options.input.name.trim();
+				if (!name) {
+					throw new Error(vscode.l10n.t('Pass the new book name via the name parameter.'));
+				}
+				const book = await library.createBook(name);
+				return text(`已新建《${book.name}》（目录：${book.dir}）。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Create book “{0}”', options.input.name),
+			}),
+		}),
+
+		vscode.lm.registerTool<Record<string, never>>('xReader_getCurrentChapter', {
+			async invoke() {
+				const books = await library.listBooks();
+				let book: BookInfo | undefined;
+				let chapter: ChapterFile | undefined;
+				let fileRel: string | undefined;
+				// 活动编辑器是书内文件（章节/元数据/世界书/角色卡/摘要/笔记）时直接解析所属书
+				const editorPath = vscode.window.activeTextEditor?.document.uri.fsPath;
+				if (editorPath && path.extname(editorPath) === '.md') {
+					const parsed = bookFromEditorPath(editorPath, books);
+					if (parsed) {
+						book = parsed.book;
+						fileRel = parsed.fileRel;
+						// 打开的是章节文件时解析章节
+						const segments = editorPath.split(path.sep);
+						const chapterIdx = segments.lastIndexOf(CHAPTERS_DIR);
+						if (chapterIdx === segments.length - 2 || chapterIdx === segments.length - 3) {
+							const fileName = segments[segments.length - 1];
+							const volumeDir = chapterIdx === segments.length - 3 ? segments[chapterIdx + 1] : undefined;
+							chapter = (await library.listChapters(book)).find(
+								(c) => chapterRelPath(c) === chapterRelPath({ fileName, volumeDir })
+							);
+						}
+					}
+				}
+				if (!book) {
+					book = library.getCurrentBook();
+				}
+				if (!book) {
+					throw new Error(
+						vscode.l10n.t('No book is currently open. Select one in the bookshelf, or open a file inside a book.')
+					);
+				}
+				if (!chapter) {
+					const progress = library.getProgress(book.dir);
+					if (progress) {
+						chapter = await library.findChapterByProgress(book, progress);
+					}
+				}
+				const [chapters, summaryKeys] = await Promise.all([
+					library.listChapters(book),
+					library.listChapterSummaryKeys(book),
+				]);
+				const index = chapter ? chapters.findIndex((c) => chapterRelPath(c) === chapterRelPath(chapter)) : -1;
+				const lines = [`书：${book.name}｜目录：${book.dir}`];
+				// 无活动编辑器时按当前书与阅读进度识别（关掉章节编辑器后仍能定位书）
+				lines.push(`当前打开：${fileRel ?? '（无，按当前书与阅读进度识别）'}`);
+				if (chapter) {
+					const mark = summaryKeys.has(chapterRelPath(chapter)) ? '｜摘要✓' : '';
+					lines.push(`当前章节：${chapterRelPath(chapter)}｜第${chapter.seq}章｜${chapter.title}${mark}`);
+				} else {
+					lines.push('当前章节：（尚未开始阅读）');
+				}
+				lines.push(`进度：${index >= 0 ? `${index + 1}/${chapters.length}` : '0/' + chapters.length}`);
+				return text(lines.join('\n'));
+			},
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('Get Current Book & Chapter') }),
+		}),
+
+		vscode.lm.registerTool<BookInput & { chapter: string }>('xReader_setProgress', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const chapter = await findChapter(library, book, options.input.chapter);
+				if (!chapter) {
+					throw new Error(
+						vscode.l10n.t(
+							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
+							options.input.chapter
+						)
+					);
+				}
+				await library.setProgress(book.dir, chapterRelPath(chapter));
+				return text(`已将《${book.name}》的阅读进度设为：${chapterRelPath(chapter)}。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Set reading progress to “{0}”', options.input.chapter),
+			}),
 		}),
 
 		vscode.lm.registerTool<BookInput>('xReader_listVolumes', {
@@ -99,7 +215,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				);
 				return text(`《${book.name}》分卷：\n${lines.join('\n')}`);
 			},
-			prepareInvocation: () => ({ invocationMessage: '列出分卷' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Volumes') }),
 		}),
 
 		vscode.lm.registerTool<BookInput & { volume?: string }>('xReader_listChapters', {
@@ -116,7 +232,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						return text(`《${book.name}》还没有章节。`);
 					}
 					throw new Error(
-						`找不到分卷「${volumeName}」。现有：${volumes.map((v) => v.name).join('、') || '（空）'}`
+						vscode.l10n.t(
+							'Volume “{0}” not found. Existing: {1}',
+							volumeName!,
+							volumes.map((v) => v.name).join('、') || vscode.l10n.t('(none)')
+						)
 					);
 				}
 				const lines: string[] = [];
@@ -129,7 +249,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				}
 				return text(`《${book.name}》章节（相对路径｜序号｜标题）：\n${lines.join('\n')}`);
 			},
-			prepareInvocation: () => ({ invocationMessage: '列出章节' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Chapters') }),
 		}),
 
 		vscode.lm.registerTool<BookInput & { chapter: string }>('xReader_readChapterSummary', {
@@ -137,7 +257,12 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const book = await resolveBook(library, options.input.book);
 				const chapter = await findChapter(library, book, options.input.chapter);
 				if (!chapter) {
-					throw new Error(`找不到章节「${options.input.chapter}」，可用相对路径、文件名或标题引用章节。`);
+					throw new Error(
+						vscode.l10n.t(
+							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
+							options.input.chapter
+						)
+					);
 				}
 				const filePath = path.join(book.dir, CHAPTER_SUMMARIES_DIR, chapter.volumeDir ?? '', chapter.fileName);
 				try {
@@ -148,7 +273,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					);
 				}
 			},
-			prepareInvocation: () => ({ invocationMessage: '读取章节摘要' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('Read Chapter Summary') }),
 		}),
 
 		vscode.lm.registerTool<BookInput & { range?: string }>('xReader_readIntervalSummary', {
@@ -171,7 +296,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				);
 				if (!target) {
 					throw new Error(
-						`找不到区间「${range}」。现有：${intervals.map((i) => `${i.startSeq}-${i.endSeq}`).join('、')}`
+						vscode.l10n.t(
+							'Interval “{0}” not found. Existing: {1}',
+							range,
+							intervals.map((i) => `${i.startSeq}-${i.endSeq}`).join('、')
+						)
 					);
 				}
 				const filePath = path.join(book.dir, INTERVAL_SUMMARIES_DIR, target.fileName);
@@ -183,7 +312,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					`第${target.startSeq}–${target.endSeq}章的区间摘要尚未创建。区间章节：${chapterList}。摘要写入：${filePath}`
 				);
 			},
-			prepareInvocation: () => ({ invocationMessage: '读取区间摘要' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('Read Interval Summary') }),
 		}),
 
 		vscode.lm.registerTool<BookInput & { name: string }>('xReader_createVolume', {
@@ -192,7 +321,36 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const dirName = await library.createVolume(book, options.input.name);
 				return text(`已创建分卷「${dirName}」（${book.name}/${CHAPTERS_DIR}/${dirName}/）。`);
 			},
-			prepareInvocation: (options) => ({ invocationMessage: `创建分卷「${options.input.name}」` }),
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Create volume “{0}”', options.input.name),
+			}),
+		}),
+
+		vscode.lm.registerTool<BookInput & { title: string; volume?: string }>('xReader_createChapter', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				let volumeDir: string | undefined;
+				const volume = options.input.volume?.trim();
+				if (volume) {
+					const volumes = await library.listVolumes(book);
+					const found = volumes.find((v) => v.name === volume || v.dirName === volume);
+					if (!found) {
+						throw new Error(
+							vscode.l10n.t(
+								'Volume “{0}” not found. Existing: {1}',
+								volume,
+								volumes.map((v) => v.name).join('、') || vscode.l10n.t('(none)')
+							)
+						);
+					}
+					volumeDir = found.dirName;
+				}
+				const fileName = await library.createChapter(book, options.input.title, volumeDir);
+				return text(`已新建章节：${chapterRelPath({ fileName, volumeDir })}。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Create chapter “{0}”', options.input.title),
+			}),
 		}),
 
 		vscode.lm.registerTool<BookInput & { oldName: string; newName: string }>('xReader_renameVolume', {
@@ -202,7 +360,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				return text(`已将分卷「${options.input.oldName}」重命名为「${target}」。`);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `重命名分卷「${options.input.oldName}」→「${options.input.newName}」`,
+				invocationMessage: vscode.l10n.t('Rename volume “{0}” to “{1}”', options.input.oldName, options.input.newName),
 			}),
 		}),
 
@@ -213,11 +371,15 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				return text(`已删除分卷「${options.input.name}」。`);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `删除分卷「${options.input.name}」`,
+				invocationMessage: vscode.l10n.t('Delete volume “{0}”', options.input.name),
 				confirmationMessages: {
-					title: '删除分卷',
+					title: vscode.l10n.t('Delete Volume'),
 					message: new vscode.MarkdownString(
-						`确定删除分卷「${options.input.name}」${options.input.deleteChapters ? '及其中全部章节' : ''}？`
+						vscode.l10n.t(
+							'Delete volume “{0}”{1}?',
+							options.input.name,
+							options.input.deleteChapters ? vscode.l10n.t(' and all its chapters') : ''
+						)
 					),
 				},
 			}),
@@ -227,17 +389,17 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const name = options.input.name.trim();
 				if (!name) {
-					throw new Error('请用 name 参数指定要删除的书文件夹名。');
+					throw new Error(vscode.l10n.t('Pass the book folder name via the name parameter.'));
 				}
 				const book = await resolveBook(library, name);
 				await library.removeBook(book);
 				return text(`已删除《${book.name}》及其全部章节。`);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `删除书籍「${options.input.name}」`,
+				invocationMessage: vscode.l10n.t('Delete book “{0}”', options.input.name),
 				confirmationMessages: {
-					title: '删除书籍',
-					message: new vscode.MarkdownString(`确定删除《${options.input.name}》？`),
+					title: vscode.l10n.t('Delete Book'),
+					message: new vscode.MarkdownString(vscode.l10n.t('Delete {0}?', options.input.name)),
 				},
 			}),
 		}),
@@ -248,7 +410,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const renamed = await library.renameBook(book, options.input.newName);
 				return text(`已将《${book.name}》重命名为《${renamed.name}》。`);
 			},
-			prepareInvocation: (options) => ({ invocationMessage: `重命名书籍→「${options.input.newName}」` }),
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Rename book to “{0}”', options.input.newName),
+			}),
 		}),
 
 		vscode.lm.registerTool<BookInput>('xReader_listNotes', {
@@ -281,7 +445,39 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						: `《${book.name}》笔记（相对路径｜名称）：\n${lines.join('\n')}`
 				);
 			},
-			prepareInvocation: () => ({ invocationMessage: '列出笔记' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Notes') }),
+		}),
+
+		vscode.lm.registerTool<BookInput & { oldName: string; newName: string }>('xReader_renameNoteCategory', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const target = await library.renameNoteCategory(book, options.input.oldName, options.input.newName);
+				return text(`已将笔记分类「${options.input.oldName}」重命名为「${target}」。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t(
+					'Rename note category “{0}” to “{1}”',
+					options.input.oldName,
+					options.input.newName
+				),
+			}),
+		}),
+
+		vscode.lm.registerTool<BookInput & { name: string }>('xReader_deleteNoteCategory', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				await library.deleteNoteCategory(book, options.input.name);
+				return text(`已删除笔记分类「${options.input.name}」。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Delete note category “{0}”', options.input.name),
+				confirmationMessages: {
+					title: vscode.l10n.t('Delete Note Category'),
+					message: new vscode.MarkdownString(
+						vscode.l10n.t('Delete note category “{0}” and all its notes?', options.input.name)
+					),
+				},
+			}),
 		}),
 
 		vscode.lm.registerTool<BookInput & { name: string; category?: string; chapter?: string }>('xReader_createNote', {
@@ -291,7 +487,12 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				if (options.input.chapter?.trim()) {
 					chapter = await findChapter(library, book, options.input.chapter.trim());
 					if (!chapter) {
-						throw new Error(`找不到章节「${options.input.chapter}」，可用相对路径、文件名或标题引用章节。`);
+						throw new Error(
+							vscode.l10n.t(
+								'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
+								options.input.chapter
+							)
+						);
 					}
 				}
 				const filePath = await library.createNote(
@@ -302,7 +503,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				);
 				return text(`笔记已就绪：${filePath}。`);
 			},
-			prepareInvocation: (options) => ({ invocationMessage: `新建笔记「${options.input.name}」` }),
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Create note “{0}”', options.input.name),
+			}),
 		}),
 
 		vscode.lm.registerTool<BookInput>('xReader_listCharacters', {
@@ -315,7 +518,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						: `《${book.name}》角色卡：\n${entries.map((e) => `${CARDS_DIR}/${e.fileName}`).join('\n')}`
 				);
 			},
-			prepareInvocation: () => ({ invocationMessage: '列出角色卡' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Characters') }),
 		}),
 
 		vscode.lm.registerTool<BookInput & { name: string }>('xReader_createCharacter', {
@@ -324,7 +527,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const filePath = await library.createEntry(book, CARDS_DIR, options.input.name);
 				return text(`角色卡已就绪：${filePath}。`);
 			},
-			prepareInvocation: (options) => ({ invocationMessage: `新建角色卡「${options.input.name}」` }),
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Create character card “{0}”', options.input.name),
+			}),
 		}),
 
 		vscode.lm.registerTool<BookInput>('xReader_listWorldEntries', {
@@ -337,7 +542,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						: `《${book.name}》世界书条目：\n${entries.map((e) => `${WORLD_DIR}/${e.fileName}`).join('\n')}`
 				);
 			},
-			prepareInvocation: () => ({ invocationMessage: '列出世界书条目' }),
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List World Entries') }),
 		}),
 
 		vscode.lm.registerTool<BookInput & { name: string }>('xReader_createWorldEntry', {
@@ -346,7 +551,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const filePath = await library.createEntry(book, WORLD_DIR, options.input.name);
 				return text(`世界书条目已就绪：${filePath}。`);
 			},
-			prepareInvocation: (options) => ({ invocationMessage: `新建世界书条目「${options.input.name}」` }),
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Create world entry “{0}”', options.input.name),
+			}),
 		}),
 
 		vscode.lm.registerTool<BookInput & { chapter: string }>('xReader_deleteChapter', {
@@ -354,16 +561,21 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const book = await resolveBook(library, options.input.book);
 				const chapter = await findChapter(library, book, options.input.chapter);
 				if (!chapter) {
-					throw new Error(`找不到章节「${options.input.chapter}」，可用相对路径、文件名或标题引用章节。`);
+					throw new Error(
+						vscode.l10n.t(
+							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
+							options.input.chapter
+						)
+					);
 				}
 				await library.removeChapter(book, chapter);
 				return text(`已删除第${chapter.seq}章「${chapter.title}」。`);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `删除章节「${options.input.chapter}」`,
+				invocationMessage: vscode.l10n.t('Delete chapter “{0}”', options.input.chapter),
 				confirmationMessages: {
-					title: '删除章节',
-					message: new vscode.MarkdownString(`确定删除章节「${options.input.chapter}」？`),
+					title: vscode.l10n.t('Delete Chapter'),
+					message: new vscode.MarkdownString(vscode.l10n.t('Delete chapter “{0}”?', options.input.chapter)),
 				},
 			}),
 		}),
@@ -373,7 +585,12 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const book = await resolveBook(library, options.input.book);
 				const chapter = await findChapter(library, book, options.input.chapter);
 				if (!chapter) {
-					throw new Error(`找不到章节「${options.input.chapter}」，可用相对路径、文件名或标题引用章节。`);
+					throw new Error(
+						vscode.l10n.t(
+							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
+							options.input.chapter
+						)
+					);
 				}
 				const newFileName = await library.renameChapter(book, chapter, options.input.newTitle);
 				return text(
@@ -381,7 +598,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `重命名章节「${options.input.chapter}」→「${options.input.newTitle}」`,
+				invocationMessage: vscode.l10n.t(
+					'Rename chapter “{0}” to “{1}”',
+					options.input.chapter,
+					options.input.newTitle
+				),
 			}),
 		}),
 
@@ -395,7 +616,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					const found = categories.find((c) => c.dirName === category || c.name === category);
 					if (!found) {
 						throw new Error(
-							`找不到笔记分类「${category}」。现有：${categories.map((c) => c.name).join('、') || '（无分类）'}`
+							vscode.l10n.t(
+								'Note category “{0}” not found. Existing: {1}',
+								category,
+								categories.map((c) => c.name).join('、') || vscode.l10n.t('(none)')
+							)
 						);
 					}
 					subDir = `${NOTES_DIR}/${found.dirName}`;
@@ -403,20 +628,69 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const note = await findEntry(library, book, subDir, options.input.name);
 				if (!note) {
 					throw new Error(
-						`找不到笔记「${options.input.name}」${category ? `（分类：${category}）` : ''}。`
+						vscode.l10n.t(
+							'Note “{0}” not found{1}.',
+							options.input.name,
+							category ? vscode.l10n.t(' (category: {0})', category) : ''
+						)
 					);
 				}
 				await library.removeEntry(book, subDir, note.fileName);
 				return text(`已删除笔记「${note.name}」${category ? `（分类：${category}）` : ''}。`);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `删除笔记「${options.input.name}」`,
+				invocationMessage: vscode.l10n.t('Delete note “{0}”', options.input.name),
 				confirmationMessages: {
-					title: '删除笔记',
+					title: vscode.l10n.t('Delete Note'),
 					message: new vscode.MarkdownString(
-						`确定删除笔记「${options.input.name}」${options.input.category ? `（分类：${options.input.category}）` : ''}？`
+						vscode.l10n.t(
+							'Delete note “{0}”{1}?',
+							options.input.name,
+							options.input.category ? vscode.l10n.t(' (category: {0})', options.input.category) : ''
+						)
 					),
 				},
+			}),
+		}),
+
+		vscode.lm.registerTool<BookInput & { name: string; newName: string; category?: string }>('xReader_renameNote', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				let subDir = NOTES_DIR;
+				const category = options.input.category?.trim();
+				if (category) {
+					const categories = await library.listNoteCategories(book);
+					const found = categories.find((c) => c.dirName === category || c.name === category);
+					if (!found) {
+						throw new Error(
+							vscode.l10n.t(
+								'Note category “{0}” not found. Existing: {1}',
+								category,
+								categories.map((c) => c.name).join('、') || vscode.l10n.t('(none)')
+							)
+						);
+					}
+					subDir = `${NOTES_DIR}/${found.dirName}`;
+				}
+				const note = await findEntry(library, book, subDir, options.input.name);
+				if (!note) {
+					throw new Error(
+						vscode.l10n.t(
+							'Note “{0}” not found{1}.',
+							options.input.name,
+							category ? vscode.l10n.t(' (category: {0})', category) : ''
+						)
+					);
+				}
+				const newFileName = await library.renameEntry(book, subDir, note.fileName, options.input.newName);
+				return text(`已重命名笔记：${subDir}/${newFileName}。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t(
+					'Rename note “{0}” to “{1}”',
+					options.input.name,
+					options.input.newName
+				),
 			}),
 		}),
 
@@ -427,18 +701,48 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				if (!found) {
 					const existing = await library.listEntries(book, CARDS_DIR);
 					throw new Error(
-						`找不到角色卡「${options.input.name}」。现有：${existing.map((e) => e.name).join('、') || '（空）'}`
+						vscode.l10n.t(
+							'Character card “{0}” not found. Existing: {1}',
+							options.input.name,
+							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
+						)
 					);
 				}
 				await library.removeEntry(book, CARDS_DIR, found.fileName);
 				return text(`已删除角色卡「${found.name}」。`);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `删除角色卡「${options.input.name}」`,
+				invocationMessage: vscode.l10n.t('Delete character card “{0}”', options.input.name),
 				confirmationMessages: {
-					title: '删除角色卡',
-					message: new vscode.MarkdownString(`确定删除角色卡「${options.input.name}」？`),
+					title: vscode.l10n.t('Delete Character Card'),
+					message: new vscode.MarkdownString(vscode.l10n.t('Delete character card “{0}”?', options.input.name)),
 				},
+			}),
+		}),
+
+		vscode.lm.registerTool<BookInput & { name: string; newName: string }>('xReader_renameCharacter', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const found = await findEntry(library, book, CARDS_DIR, options.input.name);
+				if (!found) {
+					const existing = await library.listEntries(book, CARDS_DIR);
+					throw new Error(
+						vscode.l10n.t(
+							'Character card “{0}” not found. Existing: {1}',
+							options.input.name,
+							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
+						)
+					);
+				}
+				const newFileName = await library.renameEntry(book, CARDS_DIR, found.fileName, options.input.newName);
+				return text(`已重命名角色卡：${CARDS_DIR}/${newFileName}。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t(
+					'Rename character card “{0}” to “{1}”',
+					options.input.name,
+					options.input.newName
+				),
 			}),
 		}),
 
@@ -449,18 +753,48 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				if (!found) {
 					const existing = await library.listEntries(book, WORLD_DIR);
 					throw new Error(
-						`找不到世界书条目「${options.input.name}」。现有：${existing.map((e) => e.name).join('、') || '（空）'}`
+						vscode.l10n.t(
+							'World entry “{0}” not found. Existing: {1}',
+							options.input.name,
+							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
+						)
 					);
 				}
 				await library.removeEntry(book, WORLD_DIR, found.fileName);
 				return text(`已删除世界书条目「${found.name}」。`);
 			},
 			prepareInvocation: (options) => ({
-				invocationMessage: `删除世界书条目「${options.input.name}」`,
+				invocationMessage: vscode.l10n.t('Delete world entry “{0}”', options.input.name),
 				confirmationMessages: {
-					title: '删除世界书条目',
-					message: new vscode.MarkdownString(`确定删除世界书条目「${options.input.name}」？`),
+					title: vscode.l10n.t('Delete World Entry'),
+					message: new vscode.MarkdownString(vscode.l10n.t('Delete world entry “{0}”?', options.input.name)),
 				},
+			}),
+		}),
+
+		vscode.lm.registerTool<BookInput & { name: string; newName: string }>('xReader_renameWorldEntry', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const found = await findEntry(library, book, WORLD_DIR, options.input.name);
+				if (!found) {
+					const existing = await library.listEntries(book, WORLD_DIR);
+					throw new Error(
+						vscode.l10n.t(
+							'World entry “{0}” not found. Existing: {1}',
+							options.input.name,
+							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
+						)
+					);
+				}
+				const newFileName = await library.renameEntry(book, WORLD_DIR, found.fileName, options.input.newName);
+				return text(`已重命名世界书条目：${WORLD_DIR}/${newFileName}。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t(
+					'Rename world entry “{0}” to “{1}”',
+					options.input.name,
+					options.input.newName
+				),
 			}),
 		})
 	);

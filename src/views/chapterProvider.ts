@@ -45,7 +45,7 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 		item.iconPath = new vscode.ThemeIcon('library');
 		// 虚拟默认卷（根目录章节）无真实目录，不提供重命名/删除
 		item.contextValue = volume.dirName ? 'volume' : 'volumeRoot';
-		item.description = `${volume.chapters.length} 章`;
+		item.description = vscode.l10n.t('{0} chapters', volume.chapters.length);
 		return item;
 	}
 
@@ -57,7 +57,7 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 			: undefined;
 		item.iconPath = new vscode.ThemeIcon('file');
 		item.contextValue = 'chapter';
-		item.tooltip = `第 ${chapter.seq} 章 · ${chapterRelPath(chapter)}`;
+		item.tooltip = vscode.l10n.t('Chapter {0} · {1}', chapter.seq, chapterRelPath(chapter));
 		if (book) {
 			const progress = this.library.getProgress(book.dir);
 			if (progress && (progress === chapter.fileName || progress === chapterRelPath(chapter))) {
@@ -65,7 +65,7 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 			}
 			item.command = {
 				command: 'xReader.openChapter',
-				title: '打开',
+				title: vscode.l10n.t('Open'),
 				arguments: [book.dir, chapter.volumeDir, chapter.fileName],
 			};
 		}

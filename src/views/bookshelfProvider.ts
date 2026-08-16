@@ -34,9 +34,10 @@ export class BookshelfProvider extends LibraryTreeProvider<BookInfo> {
 		item.contextValue = 'book';
 		const count = this.chapterCounts.get(book.dir);
 		const isCurrent = this.library.getCurrentBook()?.dir === book.dir;
-		item.description = `${count === undefined ? '' : `${count} 章`}${isCurrent ? ' · 当前' : ''}`;
-		item.tooltip = isCurrent ? `${book.dir}\n当前书` : book.dir;
-		item.command = { command: 'xReader.openBook', title: '打开', arguments: [book.dir] };
+		item.description = `${count === undefined ? '' : vscode.l10n.t('{0} chapters', count)}${isCurrent ? vscode.l10n.t(' · current') : ''
+			}`;
+		item.tooltip = isCurrent ? `${book.dir}\n${vscode.l10n.t('Current book')}` : book.dir;
+		item.command = { command: 'xReader.openBook', title: vscode.l10n.t('Open'), arguments: [book.dir] };
 		return item;
 	}
 

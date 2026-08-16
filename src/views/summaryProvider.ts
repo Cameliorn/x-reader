@@ -41,8 +41,14 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 			);
 			const intervalDone = intervals.filter((i) => i.exists).length;
 			return [
-				{ kind: 'chapterSummaries', description: `${done}/${total} 已建` },
-				{ kind: 'intervalSummaries', description: `${intervalDone}/${intervals.length} 已建` },
+				{
+					kind: 'chapterSummaries',
+					description: vscode.l10n.t('{0}/{1} created', done, total),
+				},
+				{
+					kind: 'intervalSummaries',
+					description: vscode.l10n.t('{0}/{1} created', intervalDone, intervals.length),
+				},
 			];
 		}
 		if ('kind' in element) {
@@ -77,7 +83,10 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 	private groupItem(group: GroupNode): vscode.TreeItem {
 		const book = this.library.getCurrentBook();
 		const isChapter = group.kind === 'chapterSummaries';
-		const item = new vscode.TreeItem(isChapter ? '章节摘要' : '区间摘要', vscode.TreeItemCollapsibleState.Expanded);
+		const item = new vscode.TreeItem(
+			isChapter ? vscode.l10n.t('Chapter Summaries') : vscode.l10n.t('Interval Summaries'),
+			vscode.TreeItemCollapsibleState.Expanded
+		);
 		item.id = book ? `${book.dir}/summaries/${group.kind}` : undefined;
 		item.iconPath = new vscode.ThemeIcon(isChapter ? 'note' : 'notebook');
 		item.contextValue = 'summaryGroup';
@@ -92,7 +101,7 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 		item.iconPath = new vscode.ThemeIcon('library');
 		item.contextValue = 'summaryVolume';
 		const done = volume.chapters.filter((c) => (c as SummaryChapter).hasSummary).length;
-		item.description = `${done}/${volume.chapters.length} 已建`;
+		item.description = vscode.l10n.t('{0}/{1} created', done, volume.chapters.length);
 		return item;
 	}
 
@@ -106,12 +115,12 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 		item.contextValue = 'chapterSummary';
 		item.description = chapter.hasSummary ? '✓' : undefined;
 		item.tooltip = chapter.hasSummary
-			? `${chapterRelPath(chapter)} · 摘要已建`
-			: `${chapterRelPath(chapter)} · 点击创建摘要`;
+			? vscode.l10n.t('{0} · summary created', chapterRelPath(chapter))
+			: vscode.l10n.t('{0} · click to create summary', chapterRelPath(chapter));
 		if (book) {
 			item.command = {
 				command: 'xReader.openChapterSummary',
-				title: '打开摘要',
+				title: vscode.l10n.t('Open Summary'),
 				arguments: [book.dir, chapter.volumeDir, chapter.fileName],
 			};
 		}
@@ -122,19 +131,22 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 		const book = this.library.getCurrentBook();
 		const label =
 			interval.startSeq === interval.endSeq
-				? `第 ${interval.startSeq} 章`
-				: `第 ${interval.startSeq}–${interval.endSeq} 章`;
+				? vscode.l10n.t('Chapter {0}', interval.startSeq)
+				: vscode.l10n.t('Chapters {0}–{1}', interval.startSeq, interval.endSeq);
 		const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
 		item.id = book ? `${book.dir}/${INTERVAL_SUMMARIES_DIR}/${interval.fileName}` : undefined;
 		item.iconPath = new vscode.ThemeIcon('notebook');
 		item.contextValue = 'intervalSummary';
 		item.description = interval.exists ? '✓' : undefined;
 		const chapterList = interval.chapters.map((c) => c.title).join('、');
-		item.tooltip = `${label}（${interval.chapters.length} 章）\n${chapterList}\n${interval.exists ? '摘要已建' : '点击创建摘要'}`;
+		item.tooltip = `${label}（${interval.chapters.length} 章）\n${chapterList}\n${interval.exists
+				? vscode.l10n.t('summary created')
+				: vscode.l10n.t('click to create summary')
+			}`;
 		if (book) {
 			item.command = {
 				command: 'xReader.openIntervalSummary',
-				title: '打开区间摘要',
+				title: vscode.l10n.t('Open Interval Summary'),
 				arguments: [book.dir, interval],
 			};
 		}

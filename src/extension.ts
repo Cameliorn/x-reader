@@ -32,6 +32,17 @@ export function activate(context: vscode.ExtensionContext): void {
 	const bookshelfView = vscode.window.createTreeView('xReader.bookshelf', {
 		treeDataProvider: bookshelfProvider,
 	});
+	// 书架选中即当前书：agent 工具（省略 book 参数）跟随书架选中
+	bookshelfView.onDidChangeSelection(
+		(e) => {
+			const book = e.selection[0];
+			if (book) {
+				void library.setCurrentBook(book.dir);
+			}
+		},
+		undefined,
+		context.subscriptions
+	);
 	const chaptersView = vscode.window.createTreeView('xReader.chapters', {
 		treeDataProvider: chapterProvider,
 	});
@@ -53,7 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	/** 状态栏：显示当前书与阅读进度，点击回到进度章节。 */
 	const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
 	statusBar.command = 'xReader.openBook';
-	statusBar.tooltip = '回到阅读进度';
+	statusBar.tooltip = vscode.l10n.t('Back to reading progress');
 
 	const setContext = (key: string, value: boolean): void => {
 		void vscode.commands.executeCommand('setContext', `xReader.${key}`, value);
@@ -68,11 +79,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		setContext('noBook', !book);
 
 		const titledViews: { view: { title?: string }; name: string }[] = [
-			{ view: chaptersView, name: '章节目录' },
-			{ view: summariesView, name: '摘要' },
-			{ view: worldView, name: '世界书' },
-			{ view: cardsView, name: '角色卡' },
-			{ view: notesView, name: '笔记' },
+			{ view: chaptersView, name: vscode.l10n.t('Chapters') },
+			{ view: summariesView, name: vscode.l10n.t('Summaries') },
+			{ view: worldView, name: vscode.l10n.t('Worldbook') },
+			{ view: cardsView, name: vscode.l10n.t('Characters') },
+			{ view: notesView, name: vscode.l10n.t('Notes') },
 		];
 		for (const { view, name } of titledViews) {
 			view.title = book ? `${name} · ${book.name}` : name;
@@ -112,7 +123,11 @@ export function activate(context: vscode.ExtensionContext): void {
 	// 旧版本（globalStorage 只读副本）数据不迁移，提示一次后清除
 	const legacy = context.globalState.get<unknown[]>('x-reader.books.v1');
 	if (legacy && legacy.length > 0) {
-		void vscode.window.showInformationMessage('X Reader 已升级为文件夹书库，旧书架数据不兼容，请重新导入小说。');
+		void vscode.window.showInformationMessage(
+			vscode.l10n.t(
+				'X Reader has been upgraded to a folder-based library. Old bookshelf data is incompatible; please re-import your novels.'
+			)
+		);
 		void context.globalState.update('x-reader.books.v1', undefined);
 	}
 
@@ -220,7 +235,9 @@ export function activate(context: vscode.ExtensionContext): void {
 		);
 		const neighbor = chapters[index + offset];
 		if (!neighbor) {
-			void vscode.window.showInformationMessage(offset === 1 ? '已经是最后一章' : '已经是第一章');
+			void vscode.window.showInformationMessage(
+				offset === 1 ? vscode.l10n.t('This is the last chapter') : vscode.l10n.t('This is the first chapter')
+			);
 			return;
 		}
 		await openChapter(bookDir, neighbor.volumeDir, neighbor.fileName, neighbor);
@@ -232,7 +249,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!target) {
 			return;
 		}
-		const name = await vscode.window.showInputBox({ title: `新建${kindLabel}`, prompt: '条目名称' });
+		const name = await vscode.window.showInputBox({
+			title: vscode.l10n.t('New {0}', kindLabel),
+			prompt: vscode.l10n.t('Entry name'),
+		});
 		if (!name?.trim()) {
 			return;
 		}
@@ -246,25 +266,31 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!target) {
 			return;
 		}
-		const name = await vscode.window.showInputBox({ title: '新建笔记（1/3）', prompt: '笔记名称' });
+		const name = await vscode.window.showInputBox({
+			title: vscode.l10n.t('New Note (1/3)'),
+			prompt: vscode.l10n.t('Note name'),
+		});
 		if (!name?.trim()) {
 			return;
 		}
 		const categories = await library.listNoteCategories(target);
 		const categoryPicked = await vscode.window.showQuickPick(
 			[
-				{ label: '（不分类）', dirName: '' },
+				{ label: vscode.l10n.t('(no category)'), dirName: '' },
 				...categories.map((c) => ({ label: c.name, dirName: c.dirName })),
-				{ label: '$(add) 新建分类…', dirName: undefined },
+				{ label: vscode.l10n.t('$(add) New category…'), dirName: undefined },
 			],
-			{ title: '新建笔记（2/3）', placeHolder: '分类' }
+			{ title: vscode.l10n.t('New Note (2/3)'), placeHolder: vscode.l10n.t('Category') }
 		);
 		if (!categoryPicked) {
 			return;
 		}
 		let categoryDir = categoryPicked.dirName;
 		if (categoryDir === undefined) {
-			const input = await vscode.window.showInputBox({ title: '新建笔记（2/3）', prompt: '分类' });
+			const input = await vscode.window.showInputBox({
+				title: vscode.l10n.t('New Note (2/3)'),
+				prompt: vscode.l10n.t('Category'),
+			});
 			if (input === undefined) {
 				return;
 			}
@@ -272,12 +298,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		}
 		const chapters = await library.listChapters(target);
 		const items: ({ label: string; description?: string; chapter?: ChapterFile })[] = [
-			{ label: '（不关联章节）' },
+			{ label: vscode.l10n.t('(no linked chapter)') },
 			...chapters.map((c) => ({ label: c.title, description: chapterRelPath(c), chapter: c })),
 		];
 		const picked = await vscode.window.showQuickPick(items, {
-			title: '新建笔记（3/3）',
-			placeHolder: '关联章节',
+			title: vscode.l10n.t('New Note (3/3)'),
+			placeHolder: vscode.l10n.t('Linked chapter'),
 		});
 		if (!picked) {
 			return;
@@ -292,7 +318,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		current: string,
 		action: (name: string) => Promise<unknown>
 	): Promise<void> => {
-		const name = await vscode.window.showInputBox({ title, value: current, prompt: '新名称' });
+		const name = await vscode.window.showInputBox({ title, value: current, prompt: vscode.l10n.t('New name') });
 		if (!name?.trim()) {
 			return;
 		}
@@ -301,8 +327,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	/** 弹出 modal 删除确认；返回是否确认。 */
 	const confirmDelete = async (message: string): Promise<boolean> => {
-		const answer = await vscode.window.showWarningMessage(message, { modal: true }, '删除');
-		return answer === '删除';
+		const deleteLabel = vscode.l10n.t('Delete');
+		const answer = await vscode.window.showWarningMessage(message, { modal: true }, deleteLabel);
+		return answer === deleteLabel;
 	};
 
 	context.subscriptions.push(
@@ -318,8 +345,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand('xReader.importBook', async () => {
 			const picked = await vscode.window.showOpenDialog({
-				title: '选择小说 txt 文件',
-				filters: { '文本文件': ['txt'] },
+				title: vscode.l10n.t('Select novel txt files'),
+				filters: { [vscode.l10n.t('Text files')]: ['txt'] },
 				canSelectMany: true,
 				canSelectFolders: false,
 			});
@@ -329,7 +356,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			const imported: { book: BookInfo; chapterCount: number }[] = [];
 			const failed: string[] = [];
 			await vscode.window.withProgress(
-				{ location: vscode.ProgressLocation.Notification, title: '正在导入小说…' },
+				{ location: vscode.ProgressLocation.Notification, title: vscode.l10n.t('Importing novels…') },
 				async (progress) => {
 					for (let i = 0; i < picked.length; i++) {
 						progress.report({
@@ -350,7 +377,9 @@ export function activate(context: vscode.ExtensionContext): void {
 				}
 			);
 			if (failed.length > 0) {
-				void vscode.window.showWarningMessage(`导入失败 ${failed.length} 本：${failed.join('；')}`);
+				void vscode.window.showWarningMessage(
+					vscode.l10n.t('Failed to import {0} books: {1}', failed.length, failed.join('；'))
+				);
 			}
 			if (imported.length > 0) {
 				await vscode.commands.executeCommand('xReader.openBook', imported[0].book.dir);
@@ -358,8 +387,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand('xReader.newBook', async () => {
 			const name = await vscode.window.showInputBox({
-				title: '新建小说',
-				prompt: '书名',
+				title: vscode.l10n.t('New Novel'),
+				prompt: vscode.l10n.t('Book name'),
 			});
 			if (!name?.trim()) {
 				return;
@@ -369,7 +398,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				await vscode.commands.executeCommand('xReader.openBook', book.dir);
 			} catch (error) {
 				void vscode.window.showErrorMessage(
-					`新建失败：${error instanceof Error ? error.message : String(error)}`
+					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
 				);
 			}
 		}),
@@ -378,12 +407,17 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!dir) {
 				const books = await library.listBooks();
 				if (books.length === 0) {
-					void vscode.window.showInformationMessage('小说库还是空的，请导入或新建小说。');
+					void vscode.window.showInformationMessage(
+						vscode.l10n.t('The library is empty. Import or create a novel.')
+					);
 					return;
 				}
 				const picked = await vscode.window.showQuickPick(
 					books.map((b) => ({ label: b.name, book: b })),
-					{ title: '打开书籍', placeHolder: '选择要打开的书' }
+					{
+						title: vscode.l10n.t('Open Book'),
+						placeHolder: vscode.l10n.t('Choose a book to open'),
+					}
 				);
 				if (!picked) {
 					return;
@@ -394,7 +428,9 @@ export function activate(context: vscode.ExtensionContext): void {
 			const chapters = await library.listChapters(book);
 			if (chapters.length === 0) {
 				await library.setCurrentBook(dir);
-				void vscode.window.showInformationMessage('本书还没有章节，请先新建章节。');
+				void vscode.window.showInformationMessage(
+					vscode.l10n.t('This book has no chapters yet. Create one first.')
+				);
 				return;
 			}
 			const progress = library.getProgress(dir);
@@ -421,15 +457,15 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book) {
 				return;
 			}
-			if (await confirmDelete(`确定删除《${book.name}》？`)) {
+			if (await confirmDelete(vscode.l10n.t('Delete book “{0}”?', book.name))) {
 				await library.removeBook(book);
 			}
 		}),
 		vscode.commands.registerCommand('xReader.newCharacterCard', (book?: BookInfo) =>
-			createEntry(book, CARDS_DIR, '角色卡')
+			createEntry(book, CARDS_DIR, vscode.l10n.t('Character Card'))
 		),
 		vscode.commands.registerCommand('xReader.newWorldEntry', (book?: BookInfo) =>
-			createEntry(book, WORLD_DIR, '世界书条目')
+			createEntry(book, WORLD_DIR, vscode.l10n.t('World Entry'))
 		),
 		vscode.commands.registerCommand('xReader.newNote', (book?: BookInfo) => createNote(book)),
 		vscode.commands.registerCommand('xReader.deleteChapter', async (chapter?: ChapterFile) => {
@@ -437,7 +473,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book || !chapter) {
 				return;
 			}
-			if (await confirmDelete(`确定删除章节「${chapter.title}」？`)) {
+			if (await confirmDelete(vscode.l10n.t('Delete chapter “{0}”?', chapter.title))) {
 				await library.removeChapter(book, chapter);
 			}
 		}),
@@ -447,8 +483,8 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			const title = await vscode.window.showInputBox({
-				title: '重命名章节',
-				prompt: '新标题',
+				title: vscode.l10n.t('Rename Chapter'),
+				prompt: vscode.l10n.t('New title'),
 				value: chapter.title,
 			});
 			if (!title?.trim()) {
@@ -461,7 +497,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book) {
 				return;
 			}
-			await renameWithInput('重命名书籍', book.name, (name) => library.renameBook(book, name));
+			await renameWithInput(vscode.l10n.t('Rename Book'), book.name, (name) => library.renameBook(book, name));
 		}),
 		vscode.commands.registerCommand(
 			'xReader.renameEntry',
@@ -470,7 +506,7 @@ export function activate(context: vscode.ExtensionContext): void {
 					return;
 				}
 				const book = { name: path.basename(arg.bookDir), dir: arg.bookDir };
-				await renameWithInput('重命名条目', arg.name, (name) =>
+				await renameWithInput(vscode.l10n.t('Rename Entry'), arg.name, (name) =>
 					library.renameEntry(book, arg.subDir, arg.fileName, name)
 				);
 			}
@@ -482,7 +518,7 @@ export function activate(context: vscode.ExtensionContext): void {
 					return;
 				}
 				const book = { name: path.basename(arg.bookDir), dir: arg.bookDir };
-				await renameWithInput('重命名笔记', arg.name, (name) =>
+				await renameWithInput(vscode.l10n.t('Rename Note'), arg.name, (name) =>
 					library.renameEntry(book, arg.subDir, arg.fileName, name)
 				);
 			}
@@ -493,8 +529,8 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			const name = await vscode.window.showInputBox({
-				title: '新建分卷',
-				prompt: '分卷名',
+				title: vscode.l10n.t('New Volume'),
+				prompt: vscode.l10n.t('Volume name'),
 			});
 			if (!name?.trim()) {
 				return;
@@ -515,8 +551,8 @@ export function activate(context: vscode.ExtensionContext): void {
 				}
 			}
 			const title = await vscode.window.showInputBox({
-				title: '新建章节',
-				prompt: '章节标题',
+				title: vscode.l10n.t('New Chapter'),
+				prompt: vscode.l10n.t('Chapter title'),
 			});
 			if (!title?.trim()) {
 				return;
@@ -530,7 +566,9 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			const dirName = volume.dirName;
-			await renameWithInput('重命名分卷', volume.name, (name) => library.renameVolume(book, dirName, name));
+			await renameWithInput(vscode.l10n.t('Rename Volume'), volume.name, (name) =>
+				library.renameVolume(book, dirName, name)
+			);
 		}),
 		vscode.commands.registerCommand('xReader.deleteVolume', async (volume?: ChapterVolume) => {
 			const book = library.getCurrentBook();
@@ -540,7 +578,9 @@ export function activate(context: vscode.ExtensionContext): void {
 			const count = volume.chapters.length;
 			if (
 				await confirmDelete(
-					count > 0 ? `确定删除分卷「${volume.name}」及其 ${count} 个章节？` : `确定删除分卷「${volume.name}」？`
+					count > 0
+						? vscode.l10n.t('Delete volume “{0}” and its {1} chapters?', volume.name, count)
+						: vscode.l10n.t('Delete volume “{0}”?', volume.name)
 				)
 			) {
 				await library.deleteVolume(book, volume.dirName, count > 0);
@@ -552,7 +592,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				if (!bookDir || !fileName) {
 					return;
 				}
-				if (await confirmDelete(`确定删除章节摘要「${fileName}」？`)) {
+				if (await confirmDelete(vscode.l10n.t('Delete chapter summary “{0}”?', fileName))) {
 					await library.removeEntry(
 						{ name: path.basename(bookDir), dir: bookDir },
 						volumeDir ? `${CHAPTER_SUMMARIES_DIR}/${volumeDir}` : CHAPTER_SUMMARIES_DIR,
@@ -565,7 +605,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!bookDir || !fileName) {
 				return;
 			}
-			if (await confirmDelete(`确定删除区间摘要「${fileName}」？`)) {
+			if (await confirmDelete(vscode.l10n.t('Delete interval summary “{0}”?', fileName))) {
 				await library.removeEntry({ name: path.basename(bookDir), dir: bookDir }, INTERVAL_SUMMARIES_DIR, fileName);
 			}
 		}),
@@ -574,7 +614,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book || !category) {
 				return;
 			}
-			await renameWithInput('重命名笔记分类', category.name, (name) =>
+			await renameWithInput(vscode.l10n.t('Rename Note Category'), category.name, (name) =>
 				library.renameNoteCategory(book, category.dirName, name)
 			);
 		}),
@@ -583,7 +623,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book || !category) {
 				return;
 			}
-			if (await confirmDelete(`确定删除笔记分类「${category.name}」及其全部笔记？`)) {
+			if (await confirmDelete(vscode.l10n.t('Delete note category “{0}” and all its notes?', category.name))) {
 				await library.deleteNoteCategory(book, category.dirName);
 			}
 		}),
@@ -593,7 +633,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				if (!arg) {
 					return;
 				}
-				if (await confirmDelete(`确定删除「${arg.name}」？`)) {
+				if (await confirmDelete(vscode.l10n.t('Delete entry “{0}”?', arg.name))) {
 					await library.removeEntry(
 						{ name: path.basename(arg.bookDir), dir: arg.bookDir },
 						arg.subDir,
@@ -639,7 +679,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			const book = library.getCurrentBook();
 			if (!book) {
-				void vscode.window.showInformationMessage('请先在书架中选择一本书');
+				void vscode.window.showInformationMessage(vscode.l10n.t('Select a book in the bookshelf first'));
 				return;
 			}
 			const ok = await commitAll(
@@ -647,7 +687,11 @@ export function activate(context: vscode.ExtensionContext): void {
 				`快照《${book.name}》 ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
 				[path.relative(root, book.dir)]
 			);
-			void vscode.window.showInformationMessage(ok ? '已保存快照' : '没有需要提交的变更（或 git 不可用）');
+			void vscode.window.showInformationMessage(
+				ok
+					? vscode.l10n.t('Snapshot saved')
+					: vscode.l10n.t('No changes to commit (or git unavailable)')
+			);
 		}),
 		vscode.commands.registerCommand('xReader.refreshBookshelf', () => {
 			bookshelfProvider.refresh();
