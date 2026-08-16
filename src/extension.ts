@@ -1,11 +1,16 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo } from './model/book';
+import type { BookInfo, ChapterFile, IntervalSummary } from './model/book';
 import { commitAll } from './services/git';
-import { CARDS_DIR, CHAPTERS_DIR, chapterRelPath, LibraryService, WORLD_DIR } from './services/library';
+import { CARDS_DIR, chapterRelPath, CHAPTERS_DIR, LibraryService, WORLD_DIR } from './services/library';
+import { parseChapterFileName } from './services/markdown';
+import { registerAgentTools } from './tools';
 import { BookshelfProvider } from './views/bookshelfProvider';
 import { ChapterProvider } from './views/chapterProvider';
+import { ChapterSummaryProvider } from './views/chapterSummaryProvider';
 import { EntryProvider } from './views/entryProvider';
+import { IntervalSummaryProvider } from './views/intervalSummaryProvider';
+import { NoteProvider } from './views/noteProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
 	const library = new LibraryService(context);
@@ -13,6 +18,9 @@ export function activate(context: vscode.ExtensionContext): void {
 	const chapterProvider = new ChapterProvider(library);
 	const worldProvider = new EntryProvider(library, WORLD_DIR, 'globe');
 	const cardsProvider = new EntryProvider(library, CARDS_DIR, 'person');
+	const chapterSummaryProvider = new ChapterSummaryProvider(library);
+	const intervalSummaryProvider = new IntervalSummaryProvider(library);
+	const noteProvider = new NoteProvider(library);
 
 	const bookshelfView = vscode.window.createTreeView('xReader.bookshelf', {
 		treeDataProvider: bookshelfProvider,
@@ -26,29 +34,77 @@ export function activate(context: vscode.ExtensionContext): void {
 	const cardsView = vscode.window.createTreeView('xReader.characters', {
 		treeDataProvider: cardsProvider,
 	});
+	const chapterSummariesView = vscode.window.createTreeView('xReader.chapterSummaries', {
+		treeDataProvider: chapterSummaryProvider,
+	});
+	const intervalSummariesView = vscode.window.createTreeView('xReader.intervalSummaries', {
+		treeDataProvider: intervalSummaryProvider,
+	});
+	const notesView = vscode.window.createTreeView('xReader.notes', {
+		treeDataProvider: noteProvider,
+	});
 
-	const updateMessages = async (): Promise<void> => {
-		bookshelfView.message = library.getLibraryPath()
-			? undefined
-			: '点击上方按钮导入 txt 小说\n（首次导入会选择小说库目录）';
-		chaptersView.message = library.getCurrentBook() ? undefined : '在书架中选择一本书开始阅读';
+	registerAgentTools(context, library);
+
+	/** 状态栏：显示当前书与阅读进度，点击回到进度章节。 */
+	const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+	statusBar.command = 'xReader.openBook';
+	statusBar.tooltip = '回到阅读进度';
+
+	const setContext = (key: string, value: boolean): void => {
+		void vscode.commands.executeCommand('setContext', `xReader.${key}`, value);
+	};
+
+	/** 刷新视图空态 context（驱动 viewsWelcome）、视图标题（带当前书名）与状态栏进度。 */
+	const updateViewStates = async (): Promise<void> => {
+		const libraryPath = library.getLibraryPath();
 		const book = library.getCurrentBook();
+		setContext('noLibrary', !libraryPath);
+		setContext('noBooks', Boolean(libraryPath) && (await library.listBooks()).length === 0);
+		setContext('noBook', !book);
+
+		const titledViews: { view: { title?: string }; name: string }[] = [
+			{ view: chaptersView, name: '章节目录' },
+			{ view: chapterSummariesView, name: '章节摘要' },
+			{ view: intervalSummariesView, name: '区间摘要' },
+			{ view: worldView, name: '世界书' },
+			{ view: cardsView, name: '角色卡' },
+			{ view: notesView, name: '笔记' },
+		];
+		for (const { view, name } of titledViews) {
+			view.title = book ? `${name} · ${book.name}` : name;
+		}
+
 		if (!book) {
-			worldView.message = '在书架中选择一本书开始阅读';
-			cardsView.message = '在书架中选择一本书开始阅读';
+			setContext('emptyChapters', false);
+			setContext('emptyWorld', false);
+			setContext('emptyCards', false);
+			setContext('emptyNotes', false);
+			statusBar.hide();
 			return;
 		}
-		worldView.message =
-			(await library.listEntries(book, WORLD_DIR)).length === 0
-				? '还没有世界书条目，点击右上角新建'
-				: undefined;
-		cardsView.message =
-			(await library.listEntries(book, CARDS_DIR)).length === 0
-				? '还没有角色卡，点击右上角新建'
-				: undefined;
+		const [chapters, world, cards, noteCategories, rootNotes] = await Promise.all([
+			library.listChapters(book),
+			library.listEntries(book, WORLD_DIR),
+			library.listEntries(book, CARDS_DIR),
+			library.listNoteCategories(book),
+			library.listNotes(book),
+		]);
+		setContext('emptyChapters', chapters.length === 0);
+		setContext('emptyWorld', world.length === 0);
+		setContext('emptyCards', cards.length === 0);
+		setContext('emptyNotes', noteCategories.length === 0 && rootNotes.length === 0);
+
+		const progress = library.getProgress(book.dir);
+		const index = progress
+			? chapters.findIndex((c) => chapterRelPath(c) === progress || c.fileName === progress)
+			: -1;
+		statusBar.text =
+			index >= 0 ? `$(book) ${book.name} · ${index + 1}/${chapters.length}` : `$(book) ${book.name}`;
+		statusBar.show();
 	};
-	library.onDidChange(() => void updateMessages());
-	void updateMessages();
+	library.onDidChange(() => void updateViewStates());
+	void updateViewStates();
 
 	// 旧版本（globalStorage 只读副本）数据不迁移，提示一次后清除
 	const legacy = context.globalState.get<unknown[]>('x-reader.books.v1');
@@ -118,6 +174,13 @@ export function activate(context: vscode.ExtensionContext): void {
 		lastChapterPath = uri.fsPath;
 		await library.setProgress(bookDir, chapterRelPath({ fileName, volumeDir }));
 		await library.setCurrentBook(bookDir);
+		const parsed = parseChapterFileName(fileName);
+		void chaptersView
+			.reveal(
+				{ seq: parsed?.seq ?? 0, title: parsed?.title ?? fileName, fileName, volumeDir },
+				{ select: true, focus: false, expand: true }
+			)
+			.then(undefined, () => undefined);
 	};
 
 	/** 从当前章节（活动编辑器所在章节，或当前书进度）翻到相邻章，跨卷连续。 */
@@ -176,11 +239,55 @@ export function activate(context: vscode.ExtensionContext): void {
 		await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 	};
 
+	/** 新建笔记：名称 → 分类（可选）→ 关联章节（可选），然后创建并打开。 */
+	const createNote = async (book: BookInfo | undefined): Promise<void> => {
+		const target = book ?? library.getCurrentBook();
+		if (!target) {
+			return;
+		}
+		const name = await vscode.window.showInputBox({ title: '新建笔记（1/3）', prompt: '笔记名称（将成为文件名）' });
+		if (!name?.trim()) {
+			return;
+		}
+		const categories = await library.listNoteCategories(target);
+		const category = await vscode.window.showInputBox({
+			title: '新建笔记（2/3）',
+			prompt:
+				categories.length > 0
+					? `分类（可选，留空则不分类；现有：${categories.map((c) => c.name).join('、')}）`
+					: '分类（可选，留空则不分类）',
+		});
+		if (category === undefined) {
+			return;
+		}
+		const chapters = await library.listChapters(target);
+		const items: ({ label: string; description?: string; chapter?: ChapterFile })[] = [
+			{ label: '（不关联章节）' },
+			...chapters.map((c) => ({ label: c.title, description: chapterRelPath(c), chapter: c })),
+		];
+		const picked = await vscode.window.showQuickPick(items, {
+			title: '新建笔记（3/3）',
+			placeHolder: '关联章节（可选，可输入筛选）',
+		});
+		if (!picked) {
+			return;
+		}
+		const filePath = await library.createNote(target, name.trim(), category.trim() || undefined, picked.chapter);
+		await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+	};
+
 	context.subscriptions.push(
 		bookshelfView,
 		chaptersView,
 		worldView,
 		cardsView,
+		chapterSummariesView,
+		intervalSummariesView,
+		notesView,
+		statusBar,
+		vscode.commands.registerCommand('xReader.chooseLibraryPath', async () => {
+			await library.ensureLibraryPath(true);
+		}),
 		vscode.commands.registerCommand('xReader.importBook', async () => {
 			const picked = await vscode.window.showOpenDialog({
 				title: '选择小说 txt 文件',
@@ -205,9 +312,21 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 		vscode.commands.registerCommand('xReader.openBook', async (bookDir?: string) => {
-			const dir = bookDir ?? library.getCurrentBook()?.dir;
+			let dir = bookDir ?? library.getCurrentBook()?.dir;
 			if (!dir) {
-				return;
+				const books = await library.listBooks();
+				if (books.length === 0) {
+					void vscode.window.showInformationMessage('小说库还是空的，请先导入 txt 小说。');
+					return;
+				}
+				const picked = await vscode.window.showQuickPick(
+					books.map((b) => ({ label: b.name, book: b })),
+					{ title: '打开书籍', placeHolder: '选择要打开的书' }
+				);
+				if (!picked) {
+					return;
+				}
+				dir = picked.book.dir;
 			}
 			const book: BookInfo = { name: path.basename(dir), dir };
 			const chapters = await library.listChapters(book);
@@ -256,6 +375,54 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('xReader.newWorldEntry', (book?: BookInfo) =>
 			createEntry(book, WORLD_DIR, '世界书条目')
 		),
+		vscode.commands.registerCommand('xReader.newNote', (book?: BookInfo) => createNote(book)),
+		vscode.commands.registerCommand(
+			'xReader.deleteEntry',
+			async (arg?: { bookDir: string; subDir: string; fileName: string; name: string }) => {
+				if (!arg) {
+					return;
+				}
+				const answer = await vscode.window.showWarningMessage(
+					`确定删除「${arg.name}」？（如有 git 历史可恢复）`,
+					{ modal: true },
+					'删除'
+				);
+				if (answer !== '删除') {
+					return;
+				}
+				await library.removeEntry({ name: path.basename(arg.bookDir), dir: arg.bookDir }, arg.subDir, arg.fileName);
+			}
+		),
+		vscode.commands.registerCommand(
+			'xReader.openChapterSummary',
+			async (bookDir?: string, volumeDir?: string, fileName?: string) => {
+				if (!bookDir || !fileName) {
+					return;
+				}
+				const parsed = parseChapterFileName(fileName);
+				const chapter: ChapterFile = {
+					seq: parsed?.seq ?? 0,
+					title: parsed?.title ?? fileName,
+					fileName,
+					volumeDir,
+				};
+				const filePath = await library.ensureChapterSummary({ name: path.basename(bookDir), dir: bookDir }, chapter);
+				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+			}
+		),
+		vscode.commands.registerCommand(
+			'xReader.openIntervalSummary',
+			async (bookDir?: string, interval?: IntervalSummary) => {
+				if (!bookDir || !interval) {
+					return;
+				}
+				const filePath = await library.ensureIntervalSummary(
+					{ name: path.basename(bookDir), dir: bookDir },
+					interval
+				);
+				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+			}
+		),
 		vscode.commands.registerCommand('xReader.snapshot', async () => {
 			const root = library.getLibraryPath();
 			if (!root) {
@@ -270,4 +437,4 @@ export function activate(context: vscode.ExtensionContext): void {
 	);
 }
 
-export function deactivate(): void {}
+export function deactivate(): void { }

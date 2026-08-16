@@ -20,9 +20,11 @@ export class BookshelfProvider implements vscode.TreeDataProvider<BookInfo> {
 			return [];
 		}
 		const books = await this.library.listBooks();
-		for (const book of books) {
-			this.chapterCounts.set(book.dir, (await this.library.listChapters(book)).length);
-		}
+		await Promise.all(
+			books.map(async (book) => {
+				this.chapterCounts.set(book.dir, (await this.library.listChapters(book)).length);
+			})
+		);
 		return books;
 	}
 
@@ -32,8 +34,9 @@ export class BookshelfProvider implements vscode.TreeDataProvider<BookInfo> {
 		item.iconPath = new vscode.ThemeIcon('book');
 		item.contextValue = 'book';
 		const count = this.chapterCounts.get(book.dir);
-		item.description = count === undefined ? '' : `${count} 章`;
-		item.tooltip = book.dir;
+		const isCurrent = this.library.getCurrentBook()?.dir === book.dir;
+		item.description = `${count === undefined ? '' : `${count} 章`}${isCurrent ? ' · 当前' : ''}`;
+		item.tooltip = isCurrent ? `${book.dir}\n当前书` : book.dir;
 		item.command = { command: 'xReader.openBook', title: '打开', arguments: [book.dir] };
 		return item;
 	}

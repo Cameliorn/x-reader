@@ -91,3 +91,51 @@ export function buildMetadataMarkdown(title: string, sourceFileName: string): st
 export function buildEntryMarkdown(name: string): string {
 	return `# ${name}\n\n`;
 }
+
+/** 区间摘要文件名：`NNNN-MMMM.md`（首尾章节序号四位零填充）。 */
+export function intervalSummaryFileName(startSeq: number, endSeq: number): string {
+	return `${String(startSeq).padStart(4, '0')}-${String(endSeq).padStart(4, '0')}.md`;
+}
+
+/** 章节摘要模板：标题 + 原文链接 + 摘要小节。 */
+export function buildChapterSummaryMarkdown(title: string, chapterFile: string, chapterHref: string): string {
+	return `# ${title} · 摘要\n\n> 原文：[${chapterFile}](<${chapterHref}>)\n\n## 摘要\n\n`;
+}
+
+/** 区间摘要模板：章节范围列表 + 摘要小节。 */
+export function buildIntervalSummaryMarkdown(
+	startSeq: number,
+	endSeq: number,
+	chapters: { seq: number; title: string }[]
+): string {
+	const list = chapters.map((c) => `- ${String(c.seq).padStart(4, '0')} ${c.title}`).join('\n');
+	return `# 第 ${startSeq}–${endSeq} 章 · 区间摘要\n\n## 章节范围\n\n${list}\n\n## 摘要\n\n`;
+}
+
+/** 笔记关联的章节信息。 */
+export interface NoteChapterLink {
+	/** 章节相对路径（分卷含目录名），写入 frontmatter */
+	relPath: string;
+	/** 章节标题 */
+	title: string;
+	/** 从笔记文件指向章节的相对链接 */
+	href: string;
+}
+
+/** 笔记模板；关联章节时写入 frontmatter chapter 字段与正文链接。 */
+export function buildNoteMarkdown(name: string, chapter?: NoteChapterLink): string {
+	if (!chapter) {
+		return `# ${name}\n\n`;
+	}
+	return [
+		'---',
+		`chapter: ${JSON.stringify(chapter.relPath)}`,
+		'---',
+		'',
+		`# ${name}`,
+		'',
+		`> 关联章节：[${chapter.title}](<${chapter.href}>)`,
+		'',
+		'',
+	].join('\n');
+}

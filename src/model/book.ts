@@ -45,3 +45,31 @@ export interface EntryFile {
 	/** 文件名 */
 	fileName: string;
 }
+
+/** 区间摘要：每 10 章一个区间，摘要文件位于 区间摘要/ 下。 */
+export interface IntervalSummary {
+	/** 起始章节序号（含） */
+	startSeq: number;
+	/** 结束章节序号（含） */
+	endSeq: number;
+	/** 摘要文件名，如 0001-0010.md */
+	fileName: string;
+	/** 区间内章节 */
+	chapters: ChapterFile[];
+	/** 摘要文件是否已存在 */
+	exists: boolean;
+}
+
+/** 笔记分类：笔记/ 下的子目录。 */
+export interface NoteCategory {
+	/** 分类名（即目录名） */
+	name: string;
+	/** 目录名 */
+	dirName: string;
+}
+
+/** 笔记文件：笔记/ 或分类子目录下的 md 文件。 */
+export interface NoteFile extends EntryFile {
+	/** 所在分类目录名；undefined 表示笔记根目录（未分类） */
+	categoryDir?: string;
+}

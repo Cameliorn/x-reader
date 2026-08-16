@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { ChapterFile, ChapterVolume } from '../model/book';
-import { CHAPTERS_DIR, chapterRelPath, LibraryService } from '../services/library';
+import { chapterRelPath, CHAPTERS_DIR, LibraryService } from '../services/library';
 
 type ChapterNode = ChapterVolume | ChapterFile;
 
@@ -19,6 +19,21 @@ export class ChapterProvider implements vscode.TreeDataProvider<ChapterNode> {
 			return book ? this.library.listVolumes(book) : [];
 		}
 		return 'chapters' in element ? element.chapters : [];
+	}
+
+	/** 供 TreeView.reveal 定位章节：章节节点的父节点是所属卷。 */
+	async getParent(element: ChapterNode): Promise<ChapterVolume | undefined> {
+		if ('chapters' in element) {
+			return undefined;
+		}
+		const book = this.library.getCurrentBook();
+		if (!book) {
+			return undefined;
+		}
+		const volumes = await this.library.listVolumes(book);
+		return volumes.find((v) =>
+			v.chapters.some((c) => c.fileName === element.fileName && (c.volumeDir ?? '') === (element.volumeDir ?? ''))
+		);
 	}
 
 	getTreeItem(node: ChapterNode): vscode.TreeItem {
@@ -43,6 +58,7 @@ export class ChapterProvider implements vscode.TreeDataProvider<ChapterNode> {
 			: undefined;
 		item.iconPath = new vscode.ThemeIcon('file');
 		item.contextValue = 'chapter';
+		item.tooltip = `第 ${chapter.seq} 章 · ${chapterRelPath(chapter)}`;
 		if (book) {
 			const progress = this.library.getProgress(book.dir);
 			if (progress && (progress === chapter.fileName || progress === chapterRelPath(chapter))) {

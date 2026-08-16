@@ -7,9 +7,15 @@ import { getChapterText, parseChapters } from './novelParser';
 export const CHAPTERS_DIR = '章节';
 export const WORLD_DIR = '世界书';
 export const CARDS_DIR = '角色卡';
+export const CHAPTER_SUMMARIES_DIR = '章节摘要';
+export const INTERVAL_SUMMARIES_DIR = '区间摘要';
+export const NOTES_DIR = '笔记';
 export const META_FILE = '元数据.md';
 
-/** 在 libraryRoot 下创建书文件夹（四件套 + 章节 md），返回书信息与章节数。 */
+/** 除 章节/ 外的空目录骨架（放 .gitkeep 以便 git 跟踪）。 */
+const EMPTY_DIRS = [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR];
+
+/** 在 libraryRoot 下创建书文件夹（目录骨架 + 章节 md），返回书信息与章节数。 */
 export async function createBookFromText(
 	libraryRoot: string,
 	rawName: string,
@@ -18,11 +24,11 @@ export async function createBookFromText(
 ): Promise<{ book: BookInfo; chapterCount: number }> {
 	const name = await uniqueBookName(libraryRoot, sanitizeFileTitle(rawName));
 	const dir = path.join(libraryRoot, name);
-	await fs.mkdir(path.join(dir, WORLD_DIR), { recursive: true });
-	await fs.mkdir(path.join(dir, CARDS_DIR), { recursive: true });
 	await fs.mkdir(path.join(dir, CHAPTERS_DIR), { recursive: true });
-	await fs.writeFile(path.join(dir, WORLD_DIR, '.gitkeep'), '');
-	await fs.writeFile(path.join(dir, CARDS_DIR, '.gitkeep'), '');
+	for (const sub of EMPTY_DIRS) {
+		await fs.mkdir(path.join(dir, sub), { recursive: true });
+		await fs.writeFile(path.join(dir, sub, '.gitkeep'), '');
+	}
 	await fs.writeFile(path.join(dir, META_FILE), buildMetadataMarkdown(name, sourceFileName), 'utf8');
 
 	const chapters = parseChapters(text);

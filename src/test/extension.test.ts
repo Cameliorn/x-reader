@@ -1,15 +1,30 @@
 import * as assert from 'assert';
 import * as fs from 'fs/promises';
+import * as iconv from 'iconv-lite';
 import * as os from 'os';
 import * as path from 'path';
 import {
+	CARDS_DIR,
+	CHAPTER_SUMMARIES_DIR,
+	CHAPTERS_DIR,
+	createBookFromText,
+	INTERVAL_SUMMARIES_DIR,
+	META_FILE,
+	NOTES_DIR,
+	WORLD_DIR,
+} from '../services/bookFactory';
+import {
 	buildChapterMarkdown,
+	buildChapterSummaryMarkdown,
+	buildIntervalSummaryMarkdown,
+	buildNoteMarkdown,
 	chapterFileName,
 	chineseNumberToInt,
+	intervalSummaryFileName,
 	parseChapterFileName,
 	sanitizeFileTitle,
 } from '../services/markdown';
-import { CARDS_DIR, CHAPTERS_DIR, createBookFromText, META_FILE, WORLD_DIR } from '../services/bookFactory';
+import { decodeBuffer } from '../services/novelParser';
 
 suite('markdown helpers', () => {
 	test('sanitizeFileTitle 去除非法字符、压缩空白并截断', () => {
@@ -59,10 +74,62 @@ suite('markdown helpers', () => {
 		assert.ok(last.includes('[← 上一章](<0003-第三章.md>)'));
 		assert.ok(!last.includes('下一章'));
 	});
+
+	test('intervalSummaryFileName 首尾序号四位零填充', () => {
+		assert.strictEqual(intervalSummaryFileName(1, 10), '0001-0010.md');
+		assert.strictEqual(intervalSummaryFileName(21, 25), '0021-0025.md');
+		assert.strictEqual(intervalSummaryFileName(31, 31), '0031-0031.md');
+	});
+
+	test('buildChapterSummaryMarkdown 含原文链接与摘要小节', () => {
+		const md = buildChapterSummaryMarkdown('第一章 起', '0001-第一章 起.md', '../章节/0001-第一章 起.md');
+		assert.ok(md.startsWith('# 第一章 起 · 摘要\n'));
+		assert.ok(md.includes('> 原文：[0001-第一章 起.md](<../章节/0001-第一章 起.md>)'));
+		assert.ok(md.includes('## 摘要'));
+	});
+
+	test('buildIntervalSummaryMarkdown 含章节范围列表', () => {
+		const md = buildIntervalSummaryMarkdown(1, 10, [
+			{ seq: 1, title: '起' },
+			{ seq: 2, title: '承' },
+		]);
+		assert.ok(md.startsWith('# 第 1–10 章 · 区间摘要\n'));
+		assert.ok(md.includes('- 0001 起'));
+		assert.ok(md.includes('- 0002 承'));
+		assert.ok(md.includes('## 摘要'));
+	});
+
+	test('buildNoteMarkdown 无关联章节时仅标题，有关联时写 frontmatter 与链接', () => {
+		assert.strictEqual(buildNoteMarkdown('随想'), '# 随想\n\n');
+
+		const md = buildNoteMarkdown('雨夜分析', {
+			relPath: '第一卷/0001-雨夜.md',
+			title: '雨夜',
+			href: '../../章节/第一卷/0001-雨夜.md',
+		});
+		assert.ok(md.startsWith('---\nchapter: "第一卷/0001-雨夜.md"\n---\n'));
+		assert.ok(md.includes('# 雨夜分析'));
+		assert.ok(md.includes('> 关联章节：[雨夜](<../../章节/第一卷/0001-雨夜.md>)'));
+	});
+});
+
+suite('decodeBuffer', () => {
+	test('无 BOM UTF-16LE/BE（含 ASCII）正确解码', () => {
+		const text = '第1章 雨夜\n正文内容ABC';
+		assert.strictEqual(decodeBuffer(iconv.encode(text, 'utf16-le')), text);
+		assert.strictEqual(decodeBuffer(iconv.encode(text, 'utf16-be')), text);
+	});
+
+	test('UTF-8（含 BOM）、GB18030 正确解码', () => {
+		const text = '第一章 起\n正文';
+		assert.strictEqual(decodeBuffer(Buffer.from(`\uFEFF${text}`, 'utf8')), text);
+		assert.strictEqual(decodeBuffer(Buffer.from(text, 'utf8')), text);
+		assert.strictEqual(decodeBuffer(iconv.encode(text, 'gb18030')), text);
+	});
 });
 
 suite('createBookFromText', () => {
-	test('生成四件套与章节 md，书名冲突时追加序号', async () => {
+	test('生成目录骨架与章节 md，书名冲突时追加序号', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const text = '第一章 起\n内容一\n\n第二章 承\n内容二';
@@ -74,8 +141,9 @@ suite('createBookFromText', () => {
 			const meta = await fs.readFile(path.join(dir, META_FILE), 'utf8');
 			assert.ok(meta.includes('title: "测试书"'));
 			assert.ok(meta.includes('## 写作要求'));
-			await fs.access(path.join(dir, WORLD_DIR, '.gitkeep'));
-			await fs.access(path.join(dir, CARDS_DIR, '.gitkeep'));
+			for (const sub of [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR]) {
+				await fs.access(path.join(dir, sub, '.gitkeep'));
+			}
 
 			const chapterFiles = (await fs.readdir(path.join(dir, CHAPTERS_DIR))).sort();
 			assert.deepStrictEqual(chapterFiles, ['0001-第一章 起.md', '0002-第二章 承.md']);

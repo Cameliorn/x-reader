@@ -10,7 +10,7 @@
     "url": "https://github.com/Cameliorn/x-reader.git"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Other"
@@ -51,6 +51,18 @@
           "contextualTitle": "小说阅读"
         },
         {
+          "id": "xReader.chapterSummaries",
+          "name": "章节摘要",
+          "icon": "resources/activity-icon.svg",
+          "contextualTitle": "小说阅读"
+        },
+        {
+          "id": "xReader.intervalSummaries",
+          "name": "区间摘要",
+          "icon": "resources/activity-icon.svg",
+          "contextualTitle": "小说阅读"
+        },
+        {
           "id": "xReader.worldbook",
           "name": "世界书",
           "icon": "resources/activity-icon.svg",
@@ -61,10 +73,99 @@
           "name": "角色卡",
           "icon": "resources/activity-icon.svg",
           "contextualTitle": "小说阅读"
+        },
+        {
+          "id": "xReader.notes",
+          "name": "笔记",
+          "icon": "resources/activity-icon.svg",
+          "contextualTitle": "小说阅读"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "xReader.bookshelf",
+        "when": "xReader.noLibrary",
+        "contents": "尚未配置小说库目录。\n[选择书库目录](command:xReader.chooseLibraryPath)\n[导入 txt 小说](command:xReader.importBook)"
+      },
+      {
+        "view": "xReader.bookshelf",
+        "when": "!xReader.noLibrary && xReader.noBooks",
+        "contents": "小说库还是空的。\n[选择书库目录](command:xReader.chooseLibraryPath)\n[导入 txt 小说](command:xReader.importBook)"
+      },
+      {
+        "view": "xReader.chapters",
+        "when": "xReader.noBook",
+        "contents": "在书架中选择一本书开始阅读。"
+      },
+      {
+        "view": "xReader.chapters",
+        "when": "!xReader.noBook && xReader.emptyChapters",
+        "contents": "本书还没有章节，可在 章节/ 目录中新建 md 文件。"
+      },
+      {
+        "view": "xReader.chapterSummaries",
+        "when": "xReader.noBook",
+        "contents": "在书架中选择一本书开始阅读。"
+      },
+      {
+        "view": "xReader.chapterSummaries",
+        "when": "!xReader.noBook && xReader.emptyChapters",
+        "contents": "本书还没有章节。"
+      },
+      {
+        "view": "xReader.intervalSummaries",
+        "when": "xReader.noBook",
+        "contents": "在书架中选择一本书开始阅读。"
+      },
+      {
+        "view": "xReader.intervalSummaries",
+        "when": "!xReader.noBook && xReader.emptyChapters",
+        "contents": "本书还没有章节。"
+      },
+      {
+        "command": "xReader.deleteEntry",
+        "title": "删除",
+        "category": "X Reader",
+        "icon": "$(trash)"
+      },
+      {
+        "view": "xReader.worldbook",
+        "when": "xReader.noBook",
+        "contents": "在书架中选择一本书开始阅读。"
+      },
+      {
+        "view": "xReader.worldbook",
+        "when": "!xReader.noBook && xReader.emptyWorld",
+        "contents": "还没有世界书条目。\n[新建世界书条目](command:xReader.newWorldEntry)"
+      },
+      {
+        "view": "xReader.characters",
+        "when": "xReader.noBook",
+        "contents": "在书架中选择一本书开始阅读。"
+      },
+      {
+        "view": "xReader.characters",
+        "when": "!xReader.noBook && xReader.emptyCards",
+        "contents": "还没有角色卡。\n[新建角色卡](command:xReader.newCharacterCard)"
+      },
+      {
+        "view": "xReader.notes",
+        "when": "xReader.noBook",
+        "contents": "在书架中选择一本书开始阅读。"
+      },
+      {
+        "view": "xReader.notes",
+        "when": "!xReader.noBook && xReader.emptyNotes",
+        "contents": "还没有笔记。\n[新建笔记](command:xReader.newNote)"
+      }
+    ],
     "commands": [
+      {
+        "command": "xReader.chooseLibraryPath",
+        "title": "选择书库目录",
+        "category": "X Reader"
+      },
       {
         "command": "xReader.importBook",
         "title": "导入小说",
@@ -118,6 +219,22 @@
         "icon": "$(globe)"
       },
       {
+        "command": "xReader.newNote",
+        "title": "新建笔记",
+        "category": "X Reader",
+        "icon": "$(note)"
+      },
+      {
+        "command": "xReader.openChapterSummary",
+        "title": "打开章节摘要",
+        "category": "X Reader"
+      },
+      {
+        "command": "xReader.openIntervalSummary",
+        "title": "打开区间摘要",
+        "category": "X Reader"
+      },
+      {
         "command": "xReader.snapshot",
         "title": "保存快照",
         "category": "X Reader",
@@ -136,20 +253,317 @@
         "xReader.libraryPath": {
           "type": "string",
           "default": "",
-          "description": "小说库目录路径（每本书是其中一个文件夹），留空时首次导入弹窗选择"
+          "description": "小说库目录路径（每本书是其中一个文件夹）。留空后下次导入小说时会弹窗重新选择目录"
         }
       }
     },
+    "languageModelTools": [
+      {
+        "name": "xReader_listVolumes",
+        "displayName": "列出分卷",
+        "toolReferenceName": "listVolumes",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(library)",
+        "modelDescription": "列出小说库中一本书的全部分卷（卷名、目录、章节数）。小说以文件夹为单位组织：章节/ 下的子目录即分卷，根目录章节归入默认卷「第一卷」。book 参数为书文件夹名，省略时使用当前书架选中的书。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            }
+          }
+        }
+      },
+      {
+        "name": "xReader_listChapters",
+        "displayName": "列出章节",
+        "toolReferenceName": "listChapters",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(list-unordered)",
+        "modelDescription": "列出一本书的章节（相对路径、序号、标题、是否已有章节摘要），可按分卷过滤。章节正文直接用文件工具读取 章节/ 下的 md 文件即可，无需专用工具。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "volume": {
+              "type": "string",
+              "description": "只列出该分卷（卷名或目录名）的章节"
+            }
+          }
+        }
+      },
+      {
+        "name": "xReader_readChapterSummary",
+        "displayName": "读取章节摘要",
+        "toolReferenceName": "readChapterSummary",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(note)",
+        "modelDescription": "读取某章的章节摘要（章节摘要/ 下与章节同名的 md）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。摘要尚未创建时返回应写入的文件路径，可用文件工具撰写后保存到该路径。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            }
+          },
+          "required": [
+            "chapter"
+          ]
+        }
+      },
+      {
+        "name": "xReader_readIntervalSummary",
+        "displayName": "读取区间摘要",
+        "toolReferenceName": "readIntervalSummary",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(notebook)",
+        "modelDescription": "读取区间摘要（区间摘要/ 下每 10 章一个的 md，文件名如 0001-0010.md）。range 参数为区间（如 1-10 或 0001-0010.md），省略时列出全部区间及其摘要是否已建。摘要尚未创建时返回区间章节列表与应写入的文件路径。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "range": {
+              "type": "string",
+              "description": "区间，如 1-10 或 0001-0010.md；省略时列出全部区间"
+            }
+          }
+        }
+      },
+      {
+        "name": "xReader_createVolume",
+        "displayName": "创建分卷",
+        "toolReferenceName": "createVolume",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(folder-library)",
+        "modelDescription": "在 章节/ 下创建新分卷子目录。创建后用文件工具移动章节 md 文件即可归卷。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "分卷名（如 第二卷；将作为目录名）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameVolume",
+        "displayName": "重命名分卷",
+        "toolReferenceName": "renameVolume",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(edit)",
+        "modelDescription": "重命名分卷目录，章节摘要/ 下的镜像目录同步更名。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "oldName": {
+              "type": "string",
+              "description": "原分卷目录名"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新分卷名"
+            }
+          },
+          "required": [
+            "oldName",
+            "newName"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteVolume",
+        "displayName": "删除分卷",
+        "toolReferenceName": "deleteVolume",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(trash)",
+        "modelDescription": "删除分卷目录及其章节摘要镜像。卷内还有章节时必须将 deleteChapters 设为 true 确认一并删除，否则操作被拒绝。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "分卷目录名"
+            },
+            "deleteChapters": {
+              "type": "boolean",
+              "description": "卷内还有章节时，确认一并删除"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_listNotes",
+        "displayName": "列出笔记",
+        "toolReferenceName": "listNotes",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(note)",
+        "modelDescription": "列出一本书的全部笔记（笔记/ 下，含分类子目录），附关联章节信息。读取与编辑笔记内容直接用文件工具即可。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            }
+          }
+        }
+      },
+      {
+        "name": "xReader_createNote",
+        "displayName": "新建笔记",
+        "toolReferenceName": "createNote",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(note)",
+        "modelDescription": "新建笔记 md：可选分类（写入 笔记/分类/ 子目录，不存在则创建），可选关联章节（写入 frontmatter chapter 字段与正文链接）。同名笔记已存在时不覆盖。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "笔记名称（将成为文件名）"
+            },
+            "category": {
+              "type": "string",
+              "description": "分类名（可选，留空则不分类）"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "关联章节（可选）：章节相对路径、文件名或标题"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_listCharacters",
+        "displayName": "列出角色卡",
+        "toolReferenceName": "listCharacters",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(person)",
+        "modelDescription": "列出一本书的全部角色卡（角色卡/ 下的 md 文件）。读取与编辑角色卡内容直接用文件工具即可。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            }
+          }
+        }
+      },
+      {
+        "name": "xReader_createCharacter",
+        "displayName": "新建角色卡",
+        "toolReferenceName": "createCharacter",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(person-add)",
+        "modelDescription": "在 角色卡/ 下新建角色卡 md。同名文件已存在时不覆盖。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "角色名（将成为文件名）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_listWorldEntries",
+        "displayName": "列出世界书条目",
+        "toolReferenceName": "listWorldEntries",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(globe)",
+        "modelDescription": "列出一本书的全部世界书条目（世界书/ 下的 md 文件）。读取与编辑条目内容直接用文件工具即可。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            }
+          }
+        }
+      },
+      {
+        "name": "xReader_createWorldEntry",
+        "displayName": "新建世界书条目",
+        "toolReferenceName": "createWorldEntry",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(globe)",
+        "modelDescription": "在 世界书/ 下新建条目 md。同名文件已存在时不覆盖。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "条目名称（将成为文件名）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      }
+    ],
     "menus": {
       "editor/title": [
         {
           "command": "xReader.prevChapter",
-          "when": "(resourceDirname =~ /章节$/ && resourceFilename =~ /^\\d{4}-.*\\.md$/) || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d{4}-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
           "group": "navigation@1"
         },
         {
           "command": "xReader.nextChapter",
-          "when": "(resourceDirname =~ /章节$/ && resourceFilename =~ /^\\d{4}-.*\\.md$/) || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d{4}-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
           "group": "navigation@2"
         }
       ],
@@ -178,6 +592,11 @@
           "command": "xReader.newCharacterCard",
           "when": "view == xReader.characters",
           "group": "navigation@1"
+        },
+        {
+          "command": "xReader.newNote",
+          "when": "view == xReader.notes",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [
@@ -200,6 +619,21 @@
           "command": "xReader.removeBook",
           "when": "view == xReader.bookshelf && viewItem == book",
           "group": "inline@4"
+        },
+        {
+          "command": "xReader.deleteEntry",
+          "when": "view == xReader.worldbook && viewItem == entry",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteEntry",
+          "when": "view == xReader.characters && viewItem == entry",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteEntry",
+          "when": "view == xReader.notes && viewItem == note",
+          "group": "inline@1"
         }
       ]
     }
@@ -221,7 +655,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.19",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.95.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.6.3",

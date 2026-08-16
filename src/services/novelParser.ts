@@ -1,5 +1,5 @@
-import { TextDecoder } from 'util';
 import * as iconv from 'iconv-lite';
+import { TextDecoder } from 'util';
 import type { Chapter } from '../model/book';
 
 /**
@@ -38,7 +38,7 @@ function detectUtf16(buf: Buffer): 'le' | 'be' | undefined {
 	if (nulCount / Math.min(buf.length, 4096) < 0.1) {
 		return undefined;
 	}
-	// 偶数位（LE 的高字节位）0 多则为 UTF-16LE，否则 BE
+	// 高字节位 0 多为 UTF-16BE（偶数位），低字节位 0 多为 UTF-16LE（奇数位）
 	let evenNul = 0;
 	let oddNul = 0;
 	for (let i = 0; i < Math.min(buf.length, 4096); i += 2) {
@@ -49,7 +49,7 @@ function detectUtf16(buf: Buffer): 'le' | 'be' | undefined {
 			oddNul++;
 		}
 	}
-	return evenNul >= oddNul ? 'le' : 'be';
+	return evenNul >= oddNul ? 'be' : 'le';
 }
 
 // 主模式：第X章 / 第X回 / 第X卷 / 第X节 等

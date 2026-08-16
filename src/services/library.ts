@@ -1,14 +1,42 @@
+import type { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import type { Dirent } from 'fs';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, ChapterVolume, EntryFile } from '../model/book';
-import { CARDS_DIR, CHAPTERS_DIR, META_FILE, WORLD_DIR, createBookFromText } from './bookFactory';
+import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, IntervalSummary, NoteCategory, NoteFile } from '../model/book';
+import {
+	CARDS_DIR,
+	CHAPTER_SUMMARIES_DIR,
+	CHAPTERS_DIR,
+	createBookFromText,
+	INTERVAL_SUMMARIES_DIR,
+	META_FILE,
+	NOTES_DIR,
+	WORLD_DIR,
+} from './bookFactory';
 import { commitAll } from './git';
-import { buildEntryMarkdown, chineseNumberToInt, parseChapterFileName, sanitizeFileTitle } from './markdown';
+import {
+	buildChapterSummaryMarkdown,
+	buildEntryMarkdown,
+	buildIntervalSummaryMarkdown,
+	buildNoteMarkdown,
+	chineseNumberToInt,
+	intervalSummaryFileName,
+	parseChapterFileName,
+	sanitizeFileTitle,
+} from './markdown';
 import { decodeBuffer } from './novelParser';
 
-export { CARDS_DIR, CHAPTERS_DIR, META_FILE, WORLD_DIR, createBookFromText };
+export {
+	CARDS_DIR,
+	CHAPTER_SUMMARIES_DIR,
+	CHAPTERS_DIR, createBookFromText, INTERVAL_SUMMARIES_DIR,
+	META_FILE,
+	NOTES_DIR,
+	WORLD_DIR
+};
+
+/** 区间摘要的章节数：每 10 章一个区间。 */
+export const INTERVAL_SUMMARY_SIZE = 10;
 
 /** 章节在 章节/ 下的相对路径（分卷含目录名），用作进度键。 */
 export function chapterRelPath(chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): string {
@@ -37,28 +65,37 @@ export class LibraryService {
 	readonly onDidChange = this._onDidChange.event;
 
 	private watcher: vscode.FileSystemWatcher | undefined;
+	private watcherRoot = '';
 	private debounce: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(private readonly context: vscode.ExtensionContext) {
 		this.ensureWatcher();
-		context.subscriptions.push({
-			dispose: () => {
-				this.watcher?.dispose();
-				if (this.debounce) {
-					clearTimeout(this.debounce);
-				}
+		context.subscriptions.push(
+			{
+				dispose: () => {
+					this.watcher?.dispose();
+					if (this.debounce) {
+						clearTimeout(this.debounce);
+					}
+				},
 			},
-		});
+			vscode.workspace.onDidChangeConfiguration((event) => {
+				if (event.affectsConfiguration('xReader.libraryPath')) {
+					this.ensureWatcher();
+					this._onDidChange.fire();
+				}
+			})
+		);
 	}
 
 	getLibraryPath(): string {
 		return vscode.workspace.getConfiguration('xReader').get<string>('libraryPath', '').trim();
 	}
 
-	/** 返回已配置的库目录；未配置时弹窗让用户选择并写入全局配置。 */
-	async ensureLibraryPath(): Promise<string | undefined> {
+	/** 返回已配置的库目录；未配置（或 force 时）弹窗让用户选择并写入全局配置。 */
+	async ensureLibraryPath(force = false): Promise<string | undefined> {
 		const existing = this.getLibraryPath();
-		if (existing) {
+		if (existing && !force) {
 			return existing;
 		}
 		const picked = await vscode.window.showOpenDialog({
@@ -76,6 +113,7 @@ export class LibraryService {
 			.getConfiguration('xReader')
 			.update('libraryPath', root, vscode.ConfigurationTarget.Global);
 		this.ensureWatcher();
+		this._onDidChange.fire();
 		return root;
 	}
 
@@ -245,6 +283,204 @@ export class LibraryService {
 		return filePath;
 	}
 
+	/** 删除条目/笔记 md 文件并提交 git 快照。 */
+	async removeEntry(book: BookInfo, subDir: string, fileName: string): Promise<void> {
+		await fs.rm(path.join(book.dir, subDir, fileName), { force: true });
+		const root = this.getLibraryPath();
+		if (root) {
+			await commitAll(root, `删除 ${subDir}/${fileName}`);
+		}
+		this._onDidChange.fire();
+	}
+
+	/** 已有章节摘要的相对路径集合（键格式同 chapterRelPath）；镜像 章节/ 的分卷结构。 */
+	async listChapterSummaryKeys(book: BookInfo): Promise<Set<string>> {
+		const keys = new Set<string>();
+		let entries: Dirent[];
+		try {
+			entries = await fs.readdir(path.join(book.dir, CHAPTER_SUMMARIES_DIR), { withFileTypes: true });
+		} catch {
+			return keys;
+		}
+		for (const entry of entries) {
+			if (entry.isDirectory()) {
+				let files: string[];
+				try {
+					files = await fs.readdir(path.join(book.dir, CHAPTER_SUMMARIES_DIR, entry.name));
+				} catch {
+					continue;
+				}
+				for (const fileName of files) {
+					if (parseChapterFileName(fileName)) {
+						keys.add(`${entry.name}/${fileName}`);
+					}
+				}
+			} else if (parseChapterFileName(entry.name)) {
+				keys.add(entry.name);
+			}
+		}
+		return keys;
+	}
+
+	/** 章节摘要文件路径（不存在则从模板创建），返回文件路径。 */
+	async ensureChapterSummary(book: BookInfo, chapter: ChapterFile): Promise<string> {
+		const filePath = path.join(book.dir, CHAPTER_SUMMARIES_DIR, chapter.volumeDir ?? '', chapter.fileName);
+		try {
+			await fs.access(filePath);
+		} catch {
+			await fs.mkdir(path.dirname(filePath), { recursive: true });
+			const prefix = chapter.volumeDir ? '../../' : '../';
+			const href = `${prefix}${CHAPTERS_DIR}/${chapterRelPath(chapter)}`;
+			await fs.writeFile(filePath, buildChapterSummaryMarkdown(chapter.title, chapter.fileName, href), 'utf8');
+		}
+		return filePath;
+	}
+
+	/** 区间摘要列表：全部章节每 10 章一个区间，附带摘要文件是否已存在。 */
+	async listIntervalSummaries(book: BookInfo): Promise<IntervalSummary[]> {
+		const chapters = await this.listChapters(book);
+		if (chapters.length === 0) {
+			return [];
+		}
+		let files: string[] = [];
+		try {
+			files = await fs.readdir(path.join(book.dir, INTERVAL_SUMMARIES_DIR));
+		} catch {
+			// 目录不存在时视为全部未建
+		}
+		const existing = new Set(files);
+		const intervals: IntervalSummary[] = [];
+		for (let i = 0; i < chapters.length; i += INTERVAL_SUMMARY_SIZE) {
+			const chunk = chapters.slice(i, i + INTERVAL_SUMMARY_SIZE);
+			const startSeq = chunk[0].seq;
+			const endSeq = chunk[chunk.length - 1].seq;
+			const fileName = intervalSummaryFileName(startSeq, endSeq);
+			intervals.push({ startSeq, endSeq, fileName, chapters: chunk, exists: existing.has(fileName) });
+		}
+		return intervals;
+	}
+
+	/** 区间摘要文件路径（不存在则从模板创建），返回文件路径。 */
+	async ensureIntervalSummary(book: BookInfo, interval: IntervalSummary): Promise<string> {
+		const filePath = path.join(book.dir, INTERVAL_SUMMARIES_DIR, interval.fileName);
+		try {
+			await fs.access(filePath);
+		} catch {
+			await fs.mkdir(path.dirname(filePath), { recursive: true });
+			const md = buildIntervalSummaryMarkdown(interval.startSeq, interval.endSeq, interval.chapters);
+			await fs.writeFile(filePath, md, 'utf8');
+		}
+		return filePath;
+	}
+
+	/** 笔记分类：笔记/ 下的子目录列表。 */
+	async listNoteCategories(book: BookInfo): Promise<NoteCategory[]> {
+		let entries: Dirent[];
+		try {
+			entries = await fs.readdir(path.join(book.dir, NOTES_DIR), { withFileTypes: true });
+		} catch {
+			return [];
+		}
+		return entries
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => ({ name: entry.name, dirName: entry.name }))
+			.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** 某个分类下（或笔记根目录）的笔记 md 文件列表。 */
+	async listNotes(book: BookInfo, categoryDir?: string): Promise<NoteFile[]> {
+		const subDir = categoryDir ? `${NOTES_DIR}/${categoryDir}` : NOTES_DIR;
+		const entries = await this.listEntries(book, subDir);
+		return entries.map((entry) => ({ ...entry, categoryDir }));
+	}
+
+	/** 新建笔记 md（已存在则不覆盖），可选分类目录与关联章节，返回文件路径。 */
+	async createNote(book: BookInfo, name: string, categoryDir?: string, chapter?: ChapterFile): Promise<string> {
+		const safeCategory = categoryDir ? sanitizeFileTitle(categoryDir) : undefined;
+		const dir = safeCategory ? path.join(book.dir, NOTES_DIR, safeCategory) : path.join(book.dir, NOTES_DIR);
+		await fs.mkdir(dir, { recursive: true });
+		const filePath = path.join(dir, `${sanitizeFileTitle(name)}.md`);
+		try {
+			await fs.access(filePath);
+		} catch {
+			const link = chapter
+				? {
+					relPath: chapterRelPath(chapter),
+					title: chapter.title,
+					href: `${safeCategory ? '../../' : '../'}${CHAPTERS_DIR}/${chapterRelPath(chapter)}`,
+				}
+				: undefined;
+			await fs.writeFile(filePath, buildNoteMarkdown(name, link), 'utf8');
+		}
+		return filePath;
+	}
+
+	/** 创建分卷（章节/ 下的子目录），返回实际卷目录名；已存在则抛错。 */
+	async createVolume(book: BookInfo, name: string): Promise<string> {
+		const dirName = sanitizeFileTitle(name);
+		const dir = path.join(book.dir, CHAPTERS_DIR, dirName);
+		try {
+			await fs.access(dir);
+			throw new Error(`分卷「${dirName}」已存在`);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes('已存在')) {
+				throw error;
+			}
+		}
+		await fs.mkdir(dir, { recursive: true });
+		this._onDidChange.fire();
+		return dirName;
+	}
+
+	/** 重命名分卷目录，并同步重命名 章节摘要/ 下的镜像目录。 */
+	async renameVolume(book: BookInfo, oldName: string, newName: string): Promise<string> {
+		const target = sanitizeFileTitle(newName);
+		const oldDir = path.join(book.dir, CHAPTERS_DIR, oldName);
+		const newDir = path.join(book.dir, CHAPTERS_DIR, target);
+		try {
+			await fs.access(oldDir);
+		} catch {
+			throw new Error(`分卷「${oldName}」不存在`);
+		}
+		try {
+			await fs.access(newDir);
+			throw new Error(`分卷「${target}」已存在`);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes('已存在')) {
+				throw error;
+			}
+		}
+		await fs.rename(oldDir, newDir);
+		try {
+			await fs.rename(
+				path.join(book.dir, CHAPTER_SUMMARIES_DIR, oldName),
+				path.join(book.dir, CHAPTER_SUMMARIES_DIR, target)
+			);
+		} catch {
+			// 无摘要镜像目录时忽略
+		}
+		this._onDidChange.fire();
+		return target;
+	}
+
+	/** 删除分卷目录及其摘要镜像；卷内还有章节且未确认时抛错。 */
+	async deleteVolume(book: BookInfo, name: string, deleteChapters: boolean): Promise<void> {
+		const dir = path.join(book.dir, CHAPTERS_DIR, name);
+		let files: string[];
+		try {
+			files = await fs.readdir(dir);
+		} catch {
+			throw new Error(`分卷「${name}」不存在`);
+		}
+		const chapterCount = files.filter((f) => parseChapterFileName(f)).length;
+		if (chapterCount > 0 && !deleteChapters) {
+			throw new Error(`分卷「${name}」内还有 ${chapterCount} 章；确认一并删除章节时请设置 deleteChapters: true`);
+		}
+		await fs.rm(dir, { recursive: true, force: true });
+		await fs.rm(path.join(book.dir, CHAPTER_SUMMARIES_DIR, name), { recursive: true, force: true });
+		this._onDidChange.fire();
+	}
+
 	getCurrentBook(): BookInfo | undefined {
 		const dir = this.context.globalState.get<string>(CURRENT_BOOK_KEY);
 		return dir ? { name: path.basename(dir), dir } : undefined;
@@ -272,7 +508,13 @@ export class LibraryService {
 
 	private ensureWatcher(): void {
 		const root = this.getLibraryPath();
-		if (!root || this.watcher) {
+		if (root === this.watcherRoot) {
+			return;
+		}
+		this.watcher?.dispose();
+		this.watcherRoot = root;
+		if (!root) {
+			this.watcher = undefined;
 			return;
 		}
 		this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.md'));
