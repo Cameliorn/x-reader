@@ -15,7 +15,7 @@ type SummaryNode = GroupNode | ChapterVolume | SummaryChapter | IntervalSummary;
 
 /** 摘要视图：顶层分 章节摘要（卷→章）与 区间摘要（每 10 章一个区间）两组，✓ 标记已建；点击打开（不存在则从模板创建）。 */
 export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
-	constructor(library: LibraryService) {
+	constructor(library: LibraryService, private readonly groupIcon: vscode.Uri) {
 		super(library);
 	}
 
@@ -88,7 +88,7 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 			vscode.TreeItemCollapsibleState.Expanded
 		);
 		item.id = book ? `${book.dir}/summaries/${group.kind}` : undefined;
-		item.iconPath = new vscode.ThemeIcon(isChapter ? 'note' : 'notebook');
+		item.iconPath = this.groupIcon;
 		item.contextValue = 'summaryGroup';
 		item.description = group.description;
 		return item;
@@ -140,8 +140,8 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 		item.description = interval.exists ? '✓' : undefined;
 		const chapterList = interval.chapters.map((c) => c.title).join('、');
 		item.tooltip = `${label}（${interval.chapters.length} 章）\n${chapterList}\n${interval.exists
-				? vscode.l10n.t('summary created')
-				: vscode.l10n.t('click to create summary')
+			? vscode.l10n.t('summary created')
+			: vscode.l10n.t('click to create summary')
 			}`;
 		if (book) {
 			item.command = {

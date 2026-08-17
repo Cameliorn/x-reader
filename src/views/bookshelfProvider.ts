@@ -6,7 +6,7 @@ import { LibraryTreeProvider } from './libraryTreeProvider';
 export class BookshelfProvider extends LibraryTreeProvider<BookInfo> {
 	private chapterCounts = new Map<string, number>();
 
-	constructor(library: LibraryService) {
+	constructor(library: LibraryService, private readonly bookIcon: vscode.Uri) {
 		super(library);
 	}
 
@@ -30,7 +30,7 @@ export class BookshelfProvider extends LibraryTreeProvider<BookInfo> {
 	getTreeItem(book: BookInfo): vscode.TreeItem {
 		const item = new vscode.TreeItem(book.name, vscode.TreeItemCollapsibleState.None);
 		item.id = book.dir;
-		item.iconPath = new vscode.ThemeIcon('book');
+		item.iconPath = this.bookIcon;
 		item.contextValue = 'book';
 		const count = this.chapterCounts.get(book.dir);
 		const isCurrent = this.library.getCurrentBook()?.dir === book.dir;

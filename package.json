@@ -2,7 +2,7 @@
   "name": "x-reader",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "publisher": "cameliorn",
   "license": "MIT",
   "repository": {

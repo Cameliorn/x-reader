@@ -22,12 +22,15 @@ import { SummaryProvider } from './views/summaryProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
 	const library = new LibraryService(context);
-	const bookshelfProvider = new BookshelfProvider(library);
-	const chapterProvider = new ChapterProvider(library);
-	const worldProvider = new EntryProvider(library, WORLD_DIR, 'globe');
-	const cardsProvider = new EntryProvider(library, CARDS_DIR, 'person');
-	const summaryProvider = new SummaryProvider(library);
-	const noteProvider = new NoteProvider(library);
+	// 视图图标同时用作各视图的树节点图标（默认活动栏分区布局不显示视图图标）
+	const viewIcon = (name: string): vscode.Uri =>
+		vscode.Uri.joinPath(context.extensionUri, 'resources', 'icons', name);
+	const bookshelfProvider = new BookshelfProvider(library, viewIcon('bookshelf.svg'));
+	const chapterProvider = new ChapterProvider(library, viewIcon('chapters.svg'));
+	const worldProvider = new EntryProvider(library, WORLD_DIR, viewIcon('worldbook.svg'));
+	const cardsProvider = new EntryProvider(library, CARDS_DIR, viewIcon('characters.svg'));
+	const summaryProvider = new SummaryProvider(library, viewIcon('summaries.svg'));
+	const noteProvider = new NoteProvider(library, viewIcon('notes.svg'));
 
 	const bookshelfView = vscode.window.createTreeView('xReader.bookshelf', {
 		treeDataProvider: bookshelfProvider,

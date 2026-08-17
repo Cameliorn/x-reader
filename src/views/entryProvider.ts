@@ -11,7 +11,7 @@ export class EntryProvider extends LibraryTreeProvider<EntryNode> {
 	constructor(
 		library: LibraryService,
 		private readonly subDir: string,
-		private readonly icon: string
+		private readonly icon: vscode.Uri
 	) {
 		super(library);
 	}
@@ -31,7 +31,7 @@ export class EntryProvider extends LibraryTreeProvider<EntryNode> {
 	getTreeItem(entry: EntryNode): vscode.TreeItem {
 		const item = new vscode.TreeItem(entry.name, vscode.TreeItemCollapsibleState.None);
 		item.id = `${entry.bookDir}/${entry.subDir}/${entry.fileName}`;
-		item.iconPath = new vscode.ThemeIcon(this.icon);
+		item.iconPath = this.icon;
 		item.contextValue = 'entry';
 		item.tooltip = `${entry.subDir}/${entry.fileName}`;
 		item.command = {

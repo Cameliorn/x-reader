@@ -7,7 +7,7 @@ type ChapterNode = ChapterVolume | ChapterFile;
 
 /** 章节目录视图：按卷分组展示当前书的章节文件，● 标记上次读到。 */
 export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
-	constructor(library: LibraryService) {
+	constructor(library: LibraryService, private readonly volumeIcon: vscode.Uri) {
 		super(library);
 	}
 
@@ -42,7 +42,7 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 		const book = this.library.getCurrentBook();
 		const item = new vscode.TreeItem(volume.name, vscode.TreeItemCollapsibleState.Expanded);
 		item.id = book ? `${book.dir}/${CHAPTERS_DIR}/${volume.dirName ?? ''}` : undefined;
-		item.iconPath = new vscode.ThemeIcon('library');
+		item.iconPath = this.volumeIcon;
 		// 虚拟默认卷（根目录章节）无真实目录，不提供重命名/删除
 		item.contextValue = volume.dirName ? 'volume' : 'volumeRoot';
 		item.description = vscode.l10n.t('{0} chapters', volume.chapters.length);
