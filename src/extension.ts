@@ -26,11 +26,17 @@ export function activate(context: vscode.ExtensionContext): void {
 	const viewIcon = (name: string): vscode.Uri =>
 		vscode.Uri.joinPath(context.extensionUri, 'resources', 'icons', name);
 	const bookshelfProvider = new BookshelfProvider(library, viewIcon('bookshelf.svg'));
-	const chapterProvider = new ChapterProvider(library, viewIcon('chapters.svg'));
+	const chapterProvider = new ChapterProvider(library, viewIcon('chapters.svg'), viewIcon('chapter.svg'));
 	const worldProvider = new EntryProvider(library, WORLD_DIR, viewIcon('worldbook.svg'));
 	const cardsProvider = new EntryProvider(library, CARDS_DIR, viewIcon('characters.svg'));
-	const summaryProvider = new SummaryProvider(library, viewIcon('summaries.svg'));
-	const noteProvider = new NoteProvider(library, viewIcon('notes.svg'));
+	const summaryProvider = new SummaryProvider(
+		library,
+		viewIcon('summaries.svg'),
+		viewIcon('summary-volume.svg'),
+		viewIcon('summary-chapter.svg'),
+		viewIcon('summary-interval.svg')
+	);
+	const noteProvider = new NoteProvider(library, viewIcon('notes.svg'), viewIcon('note-category.svg'));
 
 	const bookshelfView = vscode.window.createTreeView('xReader.bookshelf', {
 		treeDataProvider: bookshelfProvider,

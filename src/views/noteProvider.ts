@@ -9,7 +9,11 @@ const isCategory = (node: NoteNode): node is NoteCategory => 'dirName' in node;
 
 /** 笔记视图：分类目录（可折叠）+ 未分类笔记；点击打开笔记。 */
 export class NoteProvider extends LibraryTreeProvider<NoteNode> {
-	constructor(library: LibraryService, private readonly noteIcon: vscode.Uri) {
+	constructor(
+		library: LibraryService,
+		private readonly noteIcon: vscode.Uri,
+		private readonly categoryIcon: vscode.Uri
+	) {
 		super(library);
 	}
 
@@ -48,7 +52,7 @@ export class NoteProvider extends LibraryTreeProvider<NoteNode> {
 		const book = this.library.getCurrentBook();
 		const item = new vscode.TreeItem(category.name, vscode.TreeItemCollapsibleState.Collapsed);
 		item.id = book ? `${book.dir}/${NOTES_DIR}/${category.dirName}` : undefined;
-		item.iconPath = new vscode.ThemeIcon('folder');
+		item.iconPath = this.categoryIcon;
 		item.contextValue = 'noteCategory';
 		item.tooltip = vscode.l10n.t('Category: {0}', category.dirName);
 		return item;
