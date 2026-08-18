@@ -124,13 +124,13 @@
         "command": "xReader.importBook",
         "title": "%command.importBook.title%",
         "category": "X Reader",
-        "icon": "$(file-add)"
+        "icon": "resources/icons/import.svg"
       },
       {
         "command": "xReader.newBook",
         "title": "%command.newBook.title%",
         "category": "X Reader",
-        "icon": "$(new-folder)"
+        "icon": "resources/icons/new-book.svg"
       },
       {
         "command": "xReader.openBook",
@@ -185,34 +185,40 @@
         "icon": "$(edit)"
       },
       {
+        "command": "xReader.moveChapter",
+        "title": "%command.moveChapter.title%",
+        "category": "X Reader",
+        "icon": "$(arrow-swap)"
+      },
+      {
         "command": "xReader.newCharacterCard",
         "title": "%command.newCharacterCard.title%",
         "category": "X Reader",
-        "icon": "$(person-add)"
+        "icon": "resources/icons/add-character.svg"
       },
       {
         "command": "xReader.newWorldEntry",
         "title": "%command.newWorldEntry.title%",
         "category": "X Reader",
-        "icon": "$(globe)"
+        "icon": "resources/icons/add-world.svg"
       },
       {
         "command": "xReader.newNote",
         "title": "%command.newNote.title%",
         "category": "X Reader",
-        "icon": "$(note)"
+        "icon": "resources/icons/add-note.svg"
       },
       {
         "command": "xReader.newChapter",
         "title": "%command.newChapter.title%",
         "category": "X Reader",
-        "icon": "$(file-add)"
+        "icon": "resources/icons/add-chapter.svg"
       },
       {
         "command": "xReader.newVolume",
         "title": "%command.newVolume.title%",
         "category": "X Reader",
-        "icon": "$(folder-library)"
+        "icon": "resources/icons/add-volume.svg"
       },
       {
         "command": "xReader.renameVolume",
@@ -282,13 +288,13 @@
         "command": "xReader.snapshot",
         "title": "%command.snapshot.title%",
         "category": "X Reader",
-        "icon": "$(git-commit)"
+        "icon": "resources/icons/snapshot.svg"
       },
       {
         "command": "xReader.refreshBookshelf",
         "title": "%command.refreshBookshelf.title%",
         "category": "X Reader",
-        "icon": "$(refresh)"
+        "icon": "resources/icons/refresh.svg"
       }
     ],
     "configuration": {
@@ -459,7 +465,7 @@
         "toolReferenceName": "createVolume",
         "canBeReferencedInPrompt": true,
         "icon": "$(folder-library)",
-        "modelDescription": "在 章节/ 下创建新分卷子目录。创建后用文件工具移动章节 md 文件即可归卷。",
+        "modelDescription": "在 章节/ 下创建新分卷子目录。章节归卷请提示用户通过章节目录右键「移动到分卷」完成；不要用文件工具直接移动章节 md 文件，否则导航、进度与笔记关联会丢失。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1081,6 +1087,11 @@
           "command": "xReader.deleteChapter",
           "when": "view == xReader.chapters && viewItem == chapter",
           "group": "inline@2"
+        },
+        {
+          "command": "xReader.moveChapter",
+          "when": "view == xReader.chapters && viewItem == chapter",
+          "group": "1_modify@1"
         },
         {
           "command": "xReader.newChapter",

@@ -27,6 +27,7 @@
     "command.deleteEntry.title": "Delete",
     "command.deleteChapter.title": "Delete Chapter",
     "command.renameChapter.title": "Rename Chapter",
+    "command.moveChapter.title": "Move to Volume",
     "command.newCharacterCard.title": "New Character Card",
     "command.newWorldEntry.title": "New World Entry",
     "command.newNote.title": "New Note",

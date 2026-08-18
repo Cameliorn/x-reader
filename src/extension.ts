@@ -26,13 +26,13 @@ export function activate(context: vscode.ExtensionContext): void {
 	const viewIcon = (name: string): vscode.Uri =>
 		vscode.Uri.joinPath(context.extensionUri, 'resources', 'icons', name);
 	const bookshelfProvider = new BookshelfProvider(library, viewIcon('bookshelf.svg'));
-	const chapterProvider = new ChapterProvider(library, viewIcon('chapters.svg'), viewIcon('chapter.svg'));
+	const chapterProvider = new ChapterProvider(library, viewIcon('volume.svg'), viewIcon('chapter.svg'));
 	const worldProvider = new EntryProvider(library, WORLD_DIR, viewIcon('worldbook.svg'));
 	const cardsProvider = new EntryProvider(library, CARDS_DIR, viewIcon('characters.svg'));
 	const summaryProvider = new SummaryProvider(
 		library,
 		viewIcon('summaries.svg'),
-		viewIcon('summary-volume.svg'),
+		viewIcon('volume.svg'),
 		viewIcon('summary-chapter.svg'),
 		viewIcon('summary-interval.svg')
 	);
@@ -501,6 +501,26 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			const newFileName = await library.renameChapter(book, chapter, title.trim());
 			await openChapter(book.dir, chapter.volumeDir, newFileName);
+		}),
+		vscode.commands.registerCommand('xReader.moveChapter', async (chapter?: ChapterFile) => {
+			const book = library.getCurrentBook();
+			if (!book || !chapter) {
+				return;
+			}
+			const volumes = await library.listVolumes(book);
+			const targets = [
+				{ label: vscode.l10n.t('(root)'), target: undefined as string | undefined },
+				...volumes.filter((v) => v.dirName).map((v) => ({ label: v.name, target: v.dirName as string | undefined })),
+			].filter((c) => c.target !== chapter.volumeDir);
+			const pick = await vscode.window.showQuickPick(targets, {
+				title: vscode.l10n.t('Move Chapter to Volume'),
+				placeHolder: vscode.l10n.t('Select target volume'),
+			});
+			if (!pick) {
+				return;
+			}
+			await library.moveChapter(book, chapter, pick.target);
+			await openChapter(book.dir, pick.target, chapter.fileName);
 		}),
 		vscode.commands.registerCommand('xReader.renameBook', async (book?: BookInfo) => {
 			if (!book) {

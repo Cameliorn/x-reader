@@ -240,11 +240,7 @@ export class LibraryService {
 		}
 		volumeDirs.sort((a, b) => volumeSortKey(a) - volumeSortKey(b) || a.localeCompare(b));
 		const readVolumes = await Promise.all(volumeDirs.map((dirName) => this.readVolume(book, dirName)));
-		for (const volume of readVolumes) {
-			if (volume.chapters.length > 0) {
-				volumes.push(volume);
-			}
-		}
+		volumes.push(...readVolumes);
 		return volumes;
 	}
 
@@ -750,6 +746,53 @@ export class LibraryService {
 		const root = this.getLibraryPath();
 		if (root) {
 			await commitAll(root, `删除笔记分类「${name}」`);
+		}
+		this._onDidChange.fire();
+	}
+
+	/** 移动章节到目标分卷（根目录用 undefined），同步移动摘要镜像、重写全书导航、迁移进度与笔记关联。 */
+	async moveChapter(
+		book: BookInfo,
+		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		targetVolumeDir: string | undefined
+	): Promise<void> {
+		const fromDir = chapter.volumeDir ?? '';
+		const targetDir = targetVolumeDir ?? '';
+		if (fromDir === targetDir) {
+			throw new Error('目标分卷与当前分卷相同');
+		}
+		if (targetDir && !(await pathExists(path.join(book.dir, CHAPTERS_DIR, targetDir)))) {
+			throw new Error(`分卷「${targetDir}」不存在`);
+		}
+		const oldPath = path.join(book.dir, CHAPTERS_DIR, fromDir, chapter.fileName);
+		const newPath = path.join(book.dir, CHAPTERS_DIR, targetDir, chapter.fileName);
+		if (await pathExists(newPath)) {
+			throw new Error(`目标分卷中已存在「${chapter.fileName}」`);
+		}
+		// 用 workspace.fs 移动，让打开的编辑器跟随新路径
+		await vscode.workspace.fs.rename(vscode.Uri.file(oldPath), vscode.Uri.file(newPath));
+		try {
+			await vscode.workspace.fs.rename(
+				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, fromDir, chapter.fileName)),
+				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, targetDir, chapter.fileName))
+			);
+		} catch {
+			// 无摘要镜像时忽略
+		}
+		await this.rewriteBookChapterNavs(book);
+		await this.rewriteSummaryOriginal(book, targetVolumeDir, chapter.fileName);
+		const oldRel = chapterRelPath(chapter);
+		const newRel = chapterRelPath({ fileName: chapter.fileName, volumeDir: targetVolumeDir });
+		await this.updateNotesChapterRef(book, oldRel, {
+			relPath: newRel,
+			title: parseChapterFileName(chapter.fileName)?.title ?? chapter.fileName,
+		});
+		if (this.getProgress(book.dir) === oldRel) {
+			await this.setProgress(book.dir, newRel);
+		}
+		const root = this.getLibraryPath();
+		if (root) {
+			await commitAll(root, `移动章节 ${oldRel} → ${newRel}`);
 		}
 		this._onDidChange.fire();
 	}

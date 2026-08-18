@@ -584,6 +584,43 @@ suite('LibraryService 写操作', () => {
 		}
 	});
 
+	test('moveChapter 跨卷移动同步摘要镜像、导航、进度与笔记关联', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', '书.txt', TWO_VOLUME_TEXT);
+			const chapters = await service.listChapters(book);
+			const first = chapters[0];
+			const second = chapters[1];
+			await service.ensureChapterSummary(book, first);
+			await service.setProgress(book.dir, chapterRelPath(first));
+			const notePath = await service.createNote(book, '卷笔记', undefined, first);
+
+			await service.moveChapter(book, first, '第二卷');
+
+			const firstDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
+			const secondDir = path.join(book.dir, CHAPTERS_DIR, '第二卷');
+			assert.ok(await exists(path.join(secondDir, first.fileName)));
+			assert.ok(!(await exists(path.join(firstDir, first.fileName))));
+			const summary = path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第二卷', first.fileName);
+			assert.ok(await exists(summary));
+			assert.ok(!(await exists(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', first.fileName))));
+			const summaryMd = await fs.readFile(summary, 'utf8');
+			assert.ok(summaryMd.includes(`(<../../章节/第二卷/${first.fileName}>)`));
+			const secondMd = await fs.readFile(path.join(secondDir, second.fileName), 'utf8');
+			assert.ok(secondMd.includes(`[← 上一章](<${first.fileName}>)`));
+			assert.strictEqual(service.getProgress(book.dir), `第二卷/${first.fileName}`);
+			const noteMd = await fs.readFile(notePath, 'utf8');
+			assert.ok(noteMd.includes(`chapter: "第二卷/${first.fileName}"`));
+			assert.ok(noteMd.includes(`(<../章节/第二卷/${first.fileName}>)`));
+			// 目标卷不存在或与当前卷相同时拒绝
+			await assert.rejects(() => service.moveChapter(book, second, '不存在的卷'));
+			await assert.rejects(() => service.moveChapter(book, second, '第二卷'));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('renameVolume 同步镜像目录、跨卷导航、进度键与笔记卷前缀', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {

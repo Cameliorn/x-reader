@@ -27,6 +27,7 @@
     "command.deleteEntry.title": "删除",
     "command.deleteChapter.title": "删除章节",
     "command.renameChapter.title": "重命名章节",
+    "command.moveChapter.title": "移动到分卷",
     "command.newCharacterCard.title": "新建角色卡",
     "command.newWorldEntry.title": "新建世界书条目",
     "command.newNote.title": "新建笔记",
