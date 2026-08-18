@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { mdToPlainText, promptInstallAudio, readCharacterVoiceConfig, readChapterText, resolveChapter, speakViaAudio } from './audio';
 import type { BookInfo, ChapterFile, ChapterVolume, IntervalSummary, NoteCategory } from './model/book';
 import { commitAll } from './services/git';
 import {
@@ -339,6 +340,38 @@ export function activate(context: vscode.ExtensionContext): void {
 		const deleteLabel = vscode.l10n.t('Delete');
 		const answer = await vscode.window.showWarningMessage(message, { modal: true }, deleteLabel);
 		return answer === deleteLabel;
+	};
+
+	/** 朗读章节正文（无参数时回退到当前章节）；x-audio 缺失时引导安装。 */
+	const speakChapter = async (
+		mode: 'plain' | 'roles',
+		chapterArg?: ChapterFile | string,
+		volumeDir?: string,
+		fileName?: string
+	): Promise<void> => {
+		const target = await resolveChapter(library, chapterArg, volumeDir, fileName);
+		if (!target) {
+			void vscode.window.showInformationMessage(
+				vscode.l10n.t('Select a chapter in the chapters view or open a chapter file first')
+			);
+			return;
+		}
+		const content = await readChapterText(target.bookDir, target.chapter);
+		if (!content) {
+			void vscode.window.showWarningMessage(vscode.l10n.t('Failed to read the chapter file'));
+			return;
+		}
+		const text = mdToPlainText(content.text);
+		if (text.length === 0) {
+			void vscode.window.showWarningMessage(vscode.l10n.t('This chapter has no text to read'));
+			return;
+		}
+		// 分角色朗读：从本书角色卡读取音色配置（无卡片带音色时回退到 x-audio 的目录查找）
+		const voiceConfig = mode === 'roles' ? await readCharacterVoiceConfig(library, target.bookDir) : undefined;
+		const ok = await speakViaAudio(text, mode, content.uri, voiceConfig);
+		if (!ok) {
+			await promptInstallAudio();
+		}
 	};
 
 	context.subscriptions.push(
@@ -724,6 +757,30 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand('xReader.refreshBookshelf', () => {
 			bookshelfProvider.refresh();
+		}),
+		vscode.commands.registerCommand(
+			'xReader.speakChapter',
+			async (chapterArg?: ChapterFile | string, volumeDir?: string, fileName?: string) => {
+				await speakChapter('plain', chapterArg, volumeDir, fileName);
+			}
+		),
+		vscode.commands.registerCommand(
+			'xReader.speakChapterWithRoles',
+			async (chapterArg?: ChapterFile | string, volumeDir?: string, fileName?: string) => {
+				await speakChapter('roles', chapterArg, volumeDir, fileName);
+			}
+		),
+		vscode.commands.registerCommand('xReader.speakSelection', async () => {
+			const editor = vscode.window.activeTextEditor;
+			const selection = editor?.document.getText(editor.selection) ?? '';
+			if (selection.trim().length === 0) {
+				void vscode.window.showWarningMessage(vscode.l10n.t('Select some text to read aloud first'));
+				return;
+			}
+			const ok = await speakViaAudio(mdToPlainText(selection), 'plain', editor?.document.uri);
+			if (!ok) {
+				await promptInstallAudio();
+			}
 		})
 	);
 }

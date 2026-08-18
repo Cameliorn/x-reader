@@ -1,4 +1,9 @@
-# X Reader 小说阅读器
+# 📚 X Reader 小说阅读器
+
+[![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/cameliorn.x-reader?color=4ec1ff&label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=cameliorn.x-reader)
+[![Installs](https://img.shields.io/visual-studio-marketplace/d/cameliorn.x-reader?color=00b894&label=Downloads)](https://marketplace.visualstudio.com/items?itemName=cameliorn.x-reader)
+[![Rating](https://img.shields.io/visual-studio-marketplace/r/cameliorn.x-reader?color=fdcb6e&label=Rating)](https://marketplace.visualstudio.com/items?itemName=cameliorn.x-reader)
+[![License](https://img.shields.io/github/license/Cameliorn/x-reader?color=6c5ce7)](https://github.com/Cameliorn/x-reader/blob/main/LICENSE)
 
 > 在 VS Code 中阅读与创作小说，并与 Copilot 共创写作。
 
@@ -15,6 +20,7 @@
 - **笔记系统**：支持分类目录与章节关联，阅读批注与创作大纲尽收其中。
 - **章节改名级联同步**：右键重命名或直接修改章节标题，文件名、前后章导航、摘要、关联笔记与阅读进度全部自动同步，不留死链。
 - **Git 快照**：每次导入、新建、重命名、删除均自动提交快照，可随时回溯。
+- **朗读联动 x-audio**：与 [x-audio 朗读助手](https://marketplace.visualstudio.com/items?itemName=cameliorn.x-audio) 联动，一键朗读当前章节（普通 / 分角色），无需离开阅读界面。
 - **与 Copilot 共创**：注册 30 个语言模型工具，Copilot 可直接读写书库。
 - **中英文本地化**：界面自动跟随 VS Code 显示语言（中文 / English）。
 
@@ -36,6 +42,21 @@
 | 角色卡 | 角色档案 |
 | 笔记 | 分类笔记，可关联章节 |
 
+### 朗读联动（x-audio）
+
+安装 [x-audio 朗读助手](https://marketplace.visualstudio.com/items?itemName=cameliorn.x-audio) 并配置好 TTS 密钥后，可在阅读界面直接朗读：
+
+| 入口 | 说明 |
+| --- | --- |
+| 章节页签标题栏 🔊「朗读本章」 | 普通朗读当前章节正文（自动去掉 Markdown 标记与底部导航） |
+| 章节页签标题栏 👥「分角色朗读本章」 | 由 x-audio 自动识别角色与对白，逐角色分配音色朗读 |
+| 章节目录右键「朗读本章 / 分角色朗读本章」 | 对指定章节朗读，无需先打开 |
+| 章节编辑器右键「朗读选中文本」 | 只朗读选中的片段 |
+
+- 长章节超过单次合成上限时，x-audio 会自动分块合成并顺序播放。
+- 分角色朗读会从本书的**角色卡**读取角色音色：在角色卡里写一行 `- 音色：female-yujie`（或 `音色: xxx`、frontmatter `voice: xxx` / `voiceId: xxx`），即为该角色固定音色；可选 `- 类型：男/女/少女/少年/幼童/老人/旁白` 把音色同时映射到角色类型；名为「旁白」的卡片自动作为旁白音色。没有卡片带音色时回退到章节目录向上查找 `.ttsvoices.json`。
+- 未安装 x-audio 时点击朗读入口会弹出安装引导。
+
 ## 与 Copilot 共创
 
 在 Copilot Chat 中直接操作你的书库，例如：
@@ -56,29 +77,21 @@
 ## 常见问题
 
 **导入后章节目录不准确？**
+
 编码或排版格式特殊的 txt 可能解析不完整。可在章节目录中手动重命名章节，或改正文首行 `# 标题` 保存，两处会自动级联同步。
 
 **支持哪些编码？**
+
 UTF-8（含 BOM）、UTF-16 LE/BE、GB18030。
 
 **章节改名后前后章的跳转链接没变？**
+
 直接用章节目录右键「重命名章节」，或改章节正文首行标题后保存，两者效果一致，会同步更新文件名、导航链接、摘要镜像、关联笔记与阅读进度。不要用文件管理器直接改文件名，否则导航会留下死链。
 
 ## 发布说明
 
 详细变更记录见 [CHANGELOG.md](https://github.com/Cameliorn/x-reader/blob/main/CHANGELOG.md)。
 
-### 0.1.0
-
-- 导入 / 新建小说，卷章自动解析
-- 书架、章节目录、摘要（章节 / 区间）、世界书、角色卡、笔记六视图
-- 阅读进度自动记录与恢复
-- 章节改名级联同步（右键 ↔ 改首行，效果一致）
-- 30 个 Copilot 语言模型工具，共创写作
-- 全链路 Git 快照
-- 中英文本地化
-
 ## 许可证
 
 [MIT](https://github.com/Cameliorn/x-reader/blob/main/LICENSE)
-

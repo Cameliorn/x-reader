@@ -2,7 +2,7 @@
   "name": "x-reader",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.1.5",
+  "version": "1.0.0",
   "publisher": "cameliorn",
   "license": "MIT",
   "repository": {
@@ -295,6 +295,24 @@
         "title": "%command.refreshBookshelf.title%",
         "category": "X Reader",
         "icon": "resources/icons/refresh.svg"
+      },
+      {
+        "command": "xReader.speakChapter",
+        "title": "%command.speakChapter.title%",
+        "category": "X Reader",
+        "icon": "$(unmute)"
+      },
+      {
+        "command": "xReader.speakChapterWithRoles",
+        "title": "%command.speakChapterWithRoles.title%",
+        "category": "X Reader",
+        "icon": "$(unmute)"
+      },
+      {
+        "command": "xReader.speakSelection",
+        "title": "%command.speakSelection.title%",
+        "category": "X Reader",
+        "icon": "$(unmute)"
       }
     ],
     "configuration": {
@@ -1028,6 +1046,16 @@
           "command": "xReader.nextChapter",
           "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d+-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
           "group": "navigation@2"
+        },
+        {
+          "command": "xReader.speakChapter",
+          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d+-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "group": "navigation@3"
+        },
+        {
+          "command": "xReader.speakChapterWithRoles",
+          "when": "resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d+-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor'",
+          "group": "navigation@4"
         }
       ],
       "view/title": [
@@ -1078,6 +1106,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "xReader.speakChapter",
+          "when": "view == xReader.chapters && viewItem == chapter",
+          "group": "0_read@1"
+        },
+        {
+          "command": "xReader.speakChapterWithRoles",
+          "when": "view == xReader.chapters && viewItem == chapter",
+          "group": "0_read@2"
+        },
         {
           "command": "xReader.renameChapter",
           "when": "view == xReader.chapters && viewItem == chapter",
@@ -1177,6 +1215,13 @@
           "command": "xReader.deleteEntry",
           "when": "view == xReader.notes && viewItem == note",
           "group": "inline@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "xReader.speakSelection",
+          "when": "editorHasSelection && (resourcePath =~ /[\\/]章节[\\/]([^\\/]+[\\/])?\\d+-[^\\/]*\\.md$/ || activeWebviewPanelId == 'markdown.preview' || activeCustomEditorId == 'vscode.markdown.preview.editor')",
+          "group": "0_read@1"
         }
       ]
     }

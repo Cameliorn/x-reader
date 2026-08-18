@@ -137,5 +137,11 @@
     "Chapters {0}–{1}": "Chapters {0}–{1}",
     "summary created": "summary created",
     "click to create summary": "click to create summary",
-    "Open Interval Summary": "Open Interval Summary"
+    "Open Interval Summary": "Open Interval Summary",
+    "Select a chapter in the chapters view or open a chapter file first": "Select a chapter in the chapters view or open a chapter file first",
+    "Failed to read the chapter file": "Failed to read the chapter file",
+    "This chapter has no text to read": "This chapter has no text to read",
+    "Select some text to read aloud first": "Select some text to read aloud first",
+    "x-audio extension is required for reading aloud. Install it first.": "x-audio extension is required for reading aloud. Install it first.",
+    "Install x-audio": "Install x-audio"
 }

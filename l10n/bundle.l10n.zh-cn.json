@@ -137,5 +137,11 @@
     "Chapters {0}–{1}": "第 {0}–{1} 章",
     "summary created": "摘要已建",
     "click to create summary": "点击创建摘要",
-    "Open Interval Summary": "打开区间摘要"
+    "Open Interval Summary": "打开区间摘要",
+    "Select a chapter in the chapters view or open a chapter file first": "请先在章节目录选择章节，或打开章节文件",
+    "Failed to read the chapter file": "读取章节文件失败",
+    "This chapter has no text to read": "本章没有可朗读的文本",
+    "Select some text to read aloud first": "请先选中要朗读的文本",
+    "x-audio extension is required for reading aloud. Install it first.": "朗读需要 x-audio 扩展，请先安装。",
+    "Install x-audio": "安装 x-audio"
 }
