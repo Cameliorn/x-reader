@@ -4,9 +4,9 @@
     <path d="M3.4 4.6h2.6M6.7 4.6h2.6M10 4.6h2.6" stroke="#000" stroke-width="1"/>
   </mask>
   <g mask="url(#cut)">
-    <rect x="3.4" y="2.6" width="2.6" height="9.6" rx="0.5" fill="currentColor"/>
-    <rect x="6.7" y="2.6" width="2.6" height="9.6" rx="0.5" fill="currentColor"/>
-    <rect x="10" y="2.6" width="2.6" height="9.6" rx="0.5" fill="currentColor"/>
-    <rect x="2.2" y="12.9" width="11.6" height="1.5" rx="0.75" fill="currentColor"/>
+    <rect x="3.4" y="2.6" width="2.6" height="9.6" rx="0.5" fill="#6e6e6e"/>
+    <rect x="6.7" y="2.6" width="2.6" height="9.6" rx="0.5" fill="#6e6e6e"/>
+    <rect x="10" y="2.6" width="2.6" height="9.6" rx="0.5" fill="#6e6e6e"/>
+    <rect x="2.2" y="12.9" width="11.6" height="1.5" rx="0.75" fill="#6e6e6e"/>
   </g>
 </svg>
