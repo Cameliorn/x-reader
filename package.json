@@ -1402,22 +1402,22 @@
         {
           "command": "xReader.newChapterVersion",
           "when": "view == xReader.chapters && viewItem == chapter",
-          "group": "0_version@1"
+          "group": "inline@3"
         },
         {
           "command": "xReader.setPrimaryChapterVersion",
           "when": "view == xReader.chapters && viewItem == chapterVersion",
-          "group": "0_version@1"
+          "group": "inline@1"
         },
         {
           "command": "xReader.renameChapterVersion",
           "when": "view == xReader.chapters && viewItem == chapterVersion",
-          "group": "inline@1"
+          "group": "inline@2"
         },
         {
           "command": "xReader.deleteChapterVersion",
           "when": "view == xReader.chapters && viewItem == chapterVersion",
-          "group": "inline@2"
+          "group": "inline@3"
         },
         {
           "command": "xReader.newChapter",
