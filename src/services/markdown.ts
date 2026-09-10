@@ -245,7 +245,7 @@ export function intervalSummaryFileName(startSeq: number, endSeq: number): strin
 
 /** 章节摘要模板：标题 + 原文链接 + 摘要小节。 */
 export function buildChapterSummaryMarkdown(title: string, chapterFile: string, chapterHref: string): string {
-	return `# ${title} · 摘要\n\n> 原文：[${chapterFile}](<${chapterHref}>)\n\n## 摘要\n\n`;
+	return `# ${title} · 摘要\n\n> 原文：[${escapeMdLinkText(chapterFile)}](<${chapterHref}>)\n\n## 摘要\n\n`;
 }
 
 /** 区间摘要模板：章节范围列表 + 摘要小节。 */

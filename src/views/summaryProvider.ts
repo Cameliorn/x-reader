@@ -59,10 +59,8 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 			if (element.kind === 'intervalSummaries') {
 				return this.library.listIntervalSummaries(book);
 			}
-			const [volumes, states] = await Promise.all([
-				this.library.listVolumes(book),
-				this.library.listChapterSummaryStates(book),
-			]);
+			const volumes = await this.library.listVolumes(book);
+			const states = await this.library.listChapterSummaryStates(book, volumes);
 			return volumes.map((volume) => ({
 				...volume,
 				chapters: volume.chapters.map((chapter) => ({
@@ -153,7 +151,7 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 		item.contextValue = 'intervalSummary';
 		item.description = stateMark(interval.state);
 		const chapterList = interval.chapters.map((c) => c.title).join('、');
-		item.tooltip = `${label}（${interval.chapters.length} 章）\n${chapterList}\n${interval.state === 'stale'
+		item.tooltip = `${label} · ${vscode.l10n.t('{0} chapters', interval.chapters.length)}\n${chapterList}\n${interval.state === 'stale'
 			? vscode.l10n.t('needs update')
 			: interval.state === 'ok'
 				? vscode.l10n.t('summary created')

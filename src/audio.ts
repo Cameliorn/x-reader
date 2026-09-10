@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { BookInfo, ChapterFile } from './model/book';
-import { CARDS_DIR, CHAPTERS_DIR, chapterRelPath, LibraryService } from './services/library';
+import { CARDS_DIR, chapterRelPath, CHAPTERS_DIR, LibraryService, parseChapterFilePath } from './services/library';
 
 /** x-audio 扩展 ID（发布者 cameliorn）。 */
 export const AUDIO_EXTENSION_ID = 'cameliorn.x-audio';
@@ -185,28 +185,24 @@ export async function resolveChapter(
 	}
 
 	const editorPath = vscode.window.activeTextEditor?.document.uri.fsPath;
-	if (editorPath && path.extname(editorPath) === '.md') {
-		const segments = editorPath.split(path.sep);
-		// 取最后一个「章节」段：库路径本身含同名目录时不误判
-		const chapterIdx = segments.lastIndexOf(CHAPTERS_DIR);
-		if (chapterIdx >= 0 && (chapterIdx === segments.length - 2 || chapterIdx === segments.length - 3)) {
-			const resolvedBookDir = segments.slice(0, chapterIdx).join(path.sep);
-			const resolvedFile = segments[segments.length - 1];
-			const resolvedVolume = chapterIdx === segments.length - 3 ? segments[chapterIdx + 1] : undefined;
-			const book: BookInfo = { name: path.basename(resolvedBookDir), dir: resolvedBookDir };
-			try {
-				const chapters = await library.listChapters(book);
-				const found = chapters.find(
-					(c) => chapterRelPath(c) === chapterRelPath({ fileName: resolvedFile, volumeDir: resolvedVolume })
-				);
-				if (found) {
-					return { bookDir: resolvedBookDir, chapter: found };
-				}
-			} catch {
-				// 编辑器文件不在库内时直接朗读该文件
+	const parsed = editorPath ? parseChapterFilePath(editorPath) : undefined;
+	if (parsed) {
+		const book: BookInfo = { name: path.basename(parsed.bookDir), dir: parsed.bookDir };
+		try {
+			const chapters = await library.listChapters(book);
+			const found = chapters.find(
+				(c) => chapterRelPath(c) === chapterRelPath({ fileName: parsed.fileName, volumeDir: parsed.volumeDir })
+			);
+			if (found) {
+				return { bookDir: parsed.bookDir, chapter: found };
 			}
-			return { bookDir: resolvedBookDir, chapter: { seq: 0, title: resolvedFile, fileName: resolvedFile, volumeDir: resolvedVolume } };
+		} catch {
+			// 编辑器文件不在库内时直接朗读该文件
 		}
+		return {
+			bookDir: parsed.bookDir,
+			chapter: { seq: 0, title: parsed.fileName, fileName: parsed.fileName, volumeDir: parsed.volumeDir },
+		};
 	}
 
 	const book = library.getCurrentBook();

@@ -11,6 +11,7 @@ import {
 	closeFileTabs,
 	INTERVAL_SUMMARIES_DIR,
 	LibraryService,
+	parseChapterFilePath,
 	PRIMARY_KEEP_VERSION_NAME,
 	WORLD_DIR,
 } from './services/library';
@@ -226,19 +227,10 @@ export function activate(context: vscode.ExtensionContext): void {
 	/** 从当前章节（活动编辑器所在章节，或当前书进度）翻到相邻章，跨卷连续。 */
 	const openNeighbor = async (offset: 1 | -1): Promise<void> => {
 		const editorPath = vscode.window.activeTextEditor?.document.uri.fsPath;
-		let bookDir: string | undefined;
-		let currentFile: string | undefined;
-		let currentVolume: string | undefined;
-		if (editorPath && path.extname(editorPath) === '.md') {
-			const segments = editorPath.split(path.sep);
-			// 取最后一个「章节」段：库路径本身含同名目录时不误判
-			const chapterIdx = segments.lastIndexOf(CHAPTERS_DIR);
-			if (chapterIdx >= 0 && (chapterIdx === segments.length - 2 || chapterIdx === segments.length - 3)) {
-				bookDir = segments.slice(0, chapterIdx).join(path.sep);
-				currentFile = segments[segments.length - 1];
-				currentVolume = chapterIdx === segments.length - 3 ? segments[chapterIdx + 1] : undefined;
-			}
-		}
+		const parsed = editorPath ? parseChapterFilePath(editorPath) : undefined;
+		let bookDir = parsed?.bookDir;
+		let currentFile = parsed?.fileName;
+		let currentVolume = parsed?.volumeDir;
 		if (!currentFile) {
 			const book = library.getCurrentBook();
 			const progress = book ? library.getProgress(book.dir) : undefined;

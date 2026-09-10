@@ -2,7 +2,7 @@
   "name": "x-reader",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "cameliorn",
   "license": "MIT",
   "repository": {
@@ -426,30 +426,6 @@
         }
       },
       {
-        "name": "xReader_setProgress",
-        "displayName": "%languageModelTools.setProgress.displayName%",
-        "toolReferenceName": "setProgress",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/bookmark.svg",
-        "modelDescription": "把《当前书》的阅读进度设置到指定章节（决定下次打开书时的起始位置，也是 xReader_getCurrentChapter 无编辑器时的回退定位）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "chapter": {
-              "type": "string",
-              "description": "章节相对路径、文件名或标题"
-            }
-          },
-          "required": [
-            "chapter"
-          ]
-        }
-      },
-      {
         "name": "xReader_listBooks",
         "displayName": "%languageModelTools.listBooks.displayName%",
         "toolReferenceName": "listBooks",
@@ -482,6 +458,50 @@
         }
       },
       {
+        "name": "xReader_renameBook",
+        "displayName": "%languageModelTools.renameBook.displayName%",
+        "toolReferenceName": "renameBook",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/pencil.svg",
+        "modelDescription": "重命名书籍文件夹（书以文件夹为单位组织），元数据 title、当前选中书与阅读进度同步迁移。book 参数为目标书文件夹名，省略时使用当前书架选中的书；newName 为新书名。请勿用文件工具直接重命名书文件夹，否则会丢失阅读进度关联。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "要重命名的书文件夹名，省略时使用当前书架选中的书"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新书名"
+            }
+          },
+          "required": [
+            "newName"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteBook",
+        "displayName": "%languageModelTools.deleteBook.displayName%",
+        "toolReferenceName": "deleteBook",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/trash.svg",
+        "modelDescription": "删除整本书文件夹及其全部章节、摘要、笔记等。name 为书文件夹名，删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "书文件夹名（必填）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
         "name": "xReader_listVolumes",
         "displayName": "%languageModelTools.listVolumes.displayName%",
         "toolReferenceName": "listVolumes",
@@ -496,6 +516,87 @@
               "description": "书文件夹名，省略时使用当前书架选中的书"
             }
           }
+        }
+      },
+      {
+        "name": "xReader_createVolume",
+        "displayName": "%languageModelTools.createVolume.displayName%",
+        "toolReferenceName": "createVolume",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/add-volume.svg",
+        "modelDescription": "在 章节/ 下创建新分卷子目录。章节归卷请提示用户通过章节目录右键「移动到分卷」完成；不要用文件工具直接移动章节 md 文件，否则导航、进度与笔记关联会丢失。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "分卷名，如 第二卷"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameVolume",
+        "displayName": "%languageModelTools.renameVolume.displayName%",
+        "toolReferenceName": "renameVolume",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/pencil.svg",
+        "modelDescription": "重命名分卷目录，章节摘要/ 下的镜像目录同步更名，并重写全书跨卷导航、迁移进度键与笔记卷前缀。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "oldName": {
+              "type": "string",
+              "description": "原分卷目录名"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新分卷名"
+            }
+          },
+          "required": [
+            "oldName",
+            "newName"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteVolume",
+        "displayName": "%languageModelTools.deleteVolume.displayName%",
+        "toolReferenceName": "deleteVolume",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/trash.svg",
+        "modelDescription": "删除分卷目录及其章节摘要镜像。卷内还有章节时必须将 deleteChapters 设为 true 确认一并删除，否则操作被拒绝。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "分卷目录名"
+            },
+            "deleteChapters": {
+              "type": "boolean",
+              "description": "卷内还有章节时，确认一并删除"
+            }
+          },
+          "required": [
+            "name"
+          ]
         }
       },
       {
@@ -634,75 +735,6 @@
         }
       },
       {
-        "name": "xReader_readChapterSummary",
-        "displayName": "%languageModelTools.readChapterSummary.displayName%",
-        "toolReferenceName": "readChapterSummary",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/summary-chapter.svg",
-        "modelDescription": "读取某章的章节摘要（章节摘要/ 下与章节同名的 md）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。摘要尚未创建时返回应写入的文件路径，可用文件工具撰写后保存到该路径。若摘要写完之后章节正文又有改动（摘要待维护），返回内容前会附带过期提示，此时应先读正文再重写摘要。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "chapter": {
-              "type": "string",
-              "description": "章节相对路径、文件名或标题"
-            }
-          },
-          "required": [
-            "chapter"
-          ]
-        }
-      },
-      {
-        "name": "xReader_readIntervalSummary",
-        "displayName": "%languageModelTools.readIntervalSummary.displayName%",
-        "toolReferenceName": "readIntervalSummary",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/summary-interval.svg",
-        "modelDescription": "读取区间摘要（区间摘要/ 下每 10 章一个的 md，文件名如 0001-0010.md）。range 参数为区间（如 1-10 或 0001-0010.md），省略时列出全部区间及摘要状态（已建 / 待维护 / 未建）。待维护表示区间内有章节在摘要写出后被改动过，返回内容前会附带过期提示。摘要尚未创建时返回区间章节列表与应写入的文件路径。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "range": {
-              "type": "string",
-              "description": "区间，如 1-10 或 0001-0010.md；省略时列出全部区间"
-            }
-          }
-        }
-      },
-      {
-        "name": "xReader_createVolume",
-        "displayName": "%languageModelTools.createVolume.displayName%",
-        "toolReferenceName": "createVolume",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/add-volume.svg",
-        "modelDescription": "在 章节/ 下创建新分卷子目录。章节归卷请提示用户通过章节目录右键「移动到分卷」完成；不要用文件工具直接移动章节 md 文件，否则导航、进度与笔记关联会丢失。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "name": {
-              "type": "string",
-              "description": "分卷名，如 第二卷"
-            }
-          },
-          "required": [
-            "name"
-          ]
-        }
-      },
-      {
         "name": "xReader_createChapter",
         "displayName": "%languageModelTools.createChapter.displayName%",
         "toolReferenceName": "createChapter",
@@ -763,12 +795,12 @@
         }
       },
       {
-        "name": "xReader_renameVolume",
-        "displayName": "%languageModelTools.renameVolume.displayName%",
-        "toolReferenceName": "renameVolume",
+        "name": "xReader_moveChapter",
+        "displayName": "%languageModelTools.moveChapter.displayName%",
+        "toolReferenceName": "moveChapter",
         "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名分卷目录，章节摘要/ 下的镜像目录同步更名，并重写全书跨卷导航、迁移进度键与笔记卷前缀。",
+        "icon": "resources/icons/move.svg",
+        "modelDescription": "把某一章移动到另一个分卷（章节/ 下的子目录），章节序号与文件名不变，同步搬运 章节摘要/ 下的镜像、重写全书导航、迁移阅读进度与关联笔记后提交 git 快照。chapter 用章节相对路径、文件名或标题；volume 用卷名或目录名（'第一卷' 在根目录章节存在时指章节根目录）。目标分卷不存在或其中已有同名文件时操作被拒绝。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -776,28 +808,28 @@
               "type": "string",
               "description": "书文件夹名，省略时使用当前书架选中的书"
             },
-            "oldName": {
+            "chapter": {
               "type": "string",
-              "description": "原分卷目录名"
+              "description": "要移动的章节（相对路径、文件名或标题）"
             },
-            "newName": {
+            "volume": {
               "type": "string",
-              "description": "新分卷名"
+              "description": "目标分卷的卷名或目录名"
             }
           },
           "required": [
-            "oldName",
-            "newName"
+            "chapter",
+            "volume"
           ]
         }
       },
       {
-        "name": "xReader_deleteVolume",
-        "displayName": "%languageModelTools.deleteVolume.displayName%",
-        "toolReferenceName": "deleteVolume",
+        "name": "xReader_renameChapter",
+        "displayName": "%languageModelTools.renameChapter.displayName%",
+        "toolReferenceName": "renameChapter",
         "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除分卷目录及其章节摘要镜像。卷内还有章节时必须将 deleteChapters 设为 true 确认一并删除，否则操作被拒绝。",
+        "icon": "resources/icons/pencil.svg",
+        "modelDescription": "重命名章节：序号不变，newTitle 作为新文件名，同时更新章节内容首行 # 标题、章节摘要镜像、相邻章导航链接、关联笔记与阅读进度（与直接编辑内容首行保存后的效果一致）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。请勿用文件工具直接重命名章节文件，否则相邻章导航会留下死链。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -805,62 +837,112 @@
               "type": "string",
               "description": "书文件夹名，省略时使用当前书架选中的书"
             },
-            "name": {
+            "chapter": {
               "type": "string",
-              "description": "分卷目录名"
+              "description": "章节相对路径、文件名或标题"
             },
-            "deleteChapters": {
-              "type": "boolean",
-              "description": "卷内还有章节时，确认一并删除"
+            "newTitle": {
+              "type": "string",
+              "description": "新标题（将成为文件名中的标题部分）"
             }
           },
           "required": [
-            "name"
+            "chapter",
+            "newTitle"
           ]
         }
       },
       {
-        "name": "xReader_deleteBook",
-        "displayName": "%languageModelTools.deleteBook.displayName%",
-        "toolReferenceName": "deleteBook",
+        "name": "xReader_deleteChapter",
+        "displayName": "%languageModelTools.deleteChapter.displayName%",
+        "toolReferenceName": "deleteChapter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除整本书文件夹及其全部章节、摘要、笔记等。name 为书文件夹名，删除前会向用户确认。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string",
-              "description": "书文件夹名（必填）"
-            }
-          },
-          "required": [
-            "name"
-          ]
-        }
-      },
-      {
-        "name": "xReader_renameBook",
-        "displayName": "%languageModelTools.renameBook.displayName%",
-        "toolReferenceName": "renameBook",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名书籍文件夹（书以文件夹为单位组织），元数据 title、当前选中书与阅读进度同步迁移。book 参数为目标书文件夹名，省略时使用当前书架选中的书；newName 为新书名。请勿用文件工具直接重命名书文件夹，否则会丢失阅读进度关联。",
+        "modelDescription": "删除某章及其章节摘要镜像（章节摘要/ 下同名 md），删除后重写相邻章导航、迁移阅读进度并移除关联笔记引用。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。删除前会向用户确认。",
         "inputSchema": {
           "type": "object",
           "properties": {
             "book": {
               "type": "string",
-              "description": "要重命名的书文件夹名，省略时使用当前书架选中的书"
+              "description": "书文件夹名，省略时使用当前书架选中的书"
             },
-            "newName": {
+            "chapter": {
               "type": "string",
-              "description": "新书名"
+              "description": "章节相对路径、文件名或标题"
             }
           },
           "required": [
-            "newName"
+            "chapter"
           ]
+        }
+      },
+      {
+        "name": "xReader_setProgress",
+        "displayName": "%languageModelTools.setProgress.displayName%",
+        "toolReferenceName": "setProgress",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/bookmark.svg",
+        "modelDescription": "把《当前书》的阅读进度设置到指定章节（决定下次打开书时的起始位置，也是 xReader_getCurrentChapter 无编辑器时的回退定位）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            }
+          },
+          "required": [
+            "chapter"
+          ]
+        }
+      },
+      {
+        "name": "xReader_readChapterSummary",
+        "displayName": "%languageModelTools.readChapterSummary.displayName%",
+        "toolReferenceName": "readChapterSummary",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/summary-chapter.svg",
+        "modelDescription": "读取某章的章节摘要（章节摘要/ 下与章节同名的 md）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。摘要尚未创建时返回应写入的文件路径，可用文件工具撰写后保存到该路径。若摘要写完之后章节正文又有改动（摘要待维护），返回内容前会附带过期提示，此时应先读正文再重写摘要。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            }
+          },
+          "required": [
+            "chapter"
+          ]
+        }
+      },
+      {
+        "name": "xReader_readIntervalSummary",
+        "displayName": "%languageModelTools.readIntervalSummary.displayName%",
+        "toolReferenceName": "readIntervalSummary",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/summary-interval.svg",
+        "modelDescription": "读取区间摘要（区间摘要/ 下每 10 章一个的 md，文件名如 0001-0010.md）。range 参数为区间（如 1-10 或 0001-0010.md），省略时列出全部区间及摘要状态（已建 / 待维护 / 未建）。待维护表示区间内有章节在摘要写出后被改动过，返回内容前会附带过期提示。摘要尚未创建时返回区间章节列表与应写入的文件路径。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "range": {
+              "type": "string",
+              "description": "区间，如 1-10 或 0001-0010.md；省略时列出全部区间"
+            }
+          }
         }
       },
       {
@@ -878,6 +960,99 @@
               "description": "书文件夹名，省略时使用当前书架选中的书"
             }
           }
+        }
+      },
+      {
+        "name": "xReader_createNote",
+        "displayName": "%languageModelTools.createNote.displayName%",
+        "toolReferenceName": "createNote",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/add-note.svg",
+        "modelDescription": "新建笔记 md：可选分类（写入 笔记/分类/ 子目录，不存在则创建），可选关联章节（写入 frontmatter chapter 字段与正文链接）。同名笔记已存在时不覆盖。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "笔记名称"
+            },
+            "category": {
+              "type": "string",
+              "description": "分类名"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "关联章节：章节相对路径、文件名或标题"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameNote",
+        "displayName": "%languageModelTools.renameNote.displayName%",
+        "toolReferenceName": "renameNote",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/pencil.svg",
+        "modelDescription": "重命名笔记 md（笔记/ 或 笔记/分类/ 下），同步更新笔记内关联章节链接。name 可用笔记名或文件名，category 指定所在分类（省略时在笔记/ 根目录查找）。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "笔记名或文件名"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新笔记名"
+            },
+            "category": {
+              "type": "string",
+              "description": "笔记所在分类名"
+            }
+          },
+          "required": [
+            "name",
+            "newName"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteNote",
+        "displayName": "%languageModelTools.deleteNote.displayName%",
+        "toolReferenceName": "deleteNote",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/trash.svg",
+        "modelDescription": "删除笔记 md。笔记在分类下时须用 category 指定分类（分类名或目录名）。删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "笔记名称（不含扩展名）"
+            },
+            "category": {
+              "type": "string",
+              "description": "笔记所在分类（可选；未分类笔记省略）"
+            }
+          },
+          "required": [
+            "name"
+          ]
         }
       },
       {
@@ -934,38 +1109,6 @@
         }
       },
       {
-        "name": "xReader_createNote",
-        "displayName": "%languageModelTools.createNote.displayName%",
-        "toolReferenceName": "createNote",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/add-note.svg",
-        "modelDescription": "新建笔记 md：可选分类（写入 笔记/分类/ 子目录，不存在则创建），可选关联章节（写入 frontmatter chapter 字段与正文链接）。同名笔记已存在时不覆盖。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "name": {
-              "type": "string",
-              "description": "笔记名称"
-            },
-            "category": {
-              "type": "string",
-              "description": "分类名"
-            },
-            "chapter": {
-              "type": "string",
-              "description": "关联章节：章节相对路径、文件名或标题"
-            }
-          },
-          "required": [
-            "name"
-          ]
-        }
-      },
-      {
         "name": "xReader_listCharacters",
         "displayName": "%languageModelTools.listCharacters.displayName%",
         "toolReferenceName": "listCharacters",
@@ -989,6 +1132,59 @@
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/add-character.svg",
         "modelDescription": "在 角色卡/ 下新建角色卡 md。同名文件已存在时不覆盖。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "角色名"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameCharacter",
+        "displayName": "%languageModelTools.renameCharacter.displayName%",
+        "toolReferenceName": "renameCharacter",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/pencil.svg",
+        "modelDescription": "重命名 角色卡/ 下的角色卡 md。name 可用角色名或文件名。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "角色名或文件名"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新角色名"
+            }
+          },
+          "required": [
+            "name",
+            "newName"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteCharacter",
+        "displayName": "%languageModelTools.deleteCharacter.displayName%",
+        "toolReferenceName": "deleteCharacter",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/trash.svg",
+        "modelDescription": "删除 角色卡/ 下的角色卡 md。name 为角色名（不含扩展名）。删除前会向用户确认。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1048,65 +1244,12 @@
         }
       },
       {
-        "name": "xReader_deleteChapter",
-        "displayName": "%languageModelTools.deleteChapter.displayName%",
-        "toolReferenceName": "deleteChapter",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除某章及其章节摘要镜像（章节摘要/ 下同名 md），删除后重写相邻章导航、迁移阅读进度并移除关联笔记引用。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。删除前会向用户确认。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "chapter": {
-              "type": "string",
-              "description": "章节相对路径、文件名或标题"
-            }
-          },
-          "required": [
-            "chapter"
-          ]
-        }
-      },
-      {
-        "name": "xReader_renameChapter",
-        "displayName": "%languageModelTools.renameChapter.displayName%",
-        "toolReferenceName": "renameChapter",
+        "name": "xReader_renameWorldEntry",
+        "displayName": "%languageModelTools.renameWorldEntry.displayName%",
+        "toolReferenceName": "renameWorldEntry",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名章节：序号不变，newTitle 作为新文件名，同时更新章节内容首行 # 标题、章节摘要镜像、相邻章导航链接、关联笔记与阅读进度（与直接编辑内容首行保存后的效果一致）。chapter 参数可用章节相对路径（如 第一卷/0001-雨夜.md）、文件名或标题。请勿用文件工具直接重命名章节文件，否则相邻章导航会留下死链。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "chapter": {
-              "type": "string",
-              "description": "章节相对路径、文件名或标题"
-            },
-            "newTitle": {
-              "type": "string",
-              "description": "新标题（将成为文件名中的标题部分）"
-            }
-          },
-          "required": [
-            "chapter",
-            "newTitle"
-          ]
-        }
-      },
-      {
-        "name": "xReader_deleteNote",
-        "displayName": "%languageModelTools.deleteNote.displayName%",
-        "toolReferenceName": "deleteNote",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除笔记 md。笔记在分类下时须用 category 指定分类（分类名或目录名）。删除前会向用户确认。",
+        "modelDescription": "重命名 世界书/ 下的条目 md。name 可用条目名称或文件名。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1116,96 +1259,11 @@
             },
             "name": {
               "type": "string",
-              "description": "笔记名称（不含扩展名）"
-            },
-            "category": {
-              "type": "string",
-              "description": "笔记所在分类（可选；未分类笔记省略）"
-            }
-          },
-          "required": [
-            "name"
-          ]
-        }
-      },
-      {
-        "name": "xReader_renameNote",
-        "displayName": "%languageModelTools.renameNote.displayName%",
-        "toolReferenceName": "renameNote",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名笔记 md（笔记/ 或 笔记/分类/ 下），同步更新笔记内关联章节链接。name 可用笔记名或文件名，category 指定所在分类（省略时在笔记/ 根目录查找）。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "name": {
-              "type": "string",
-              "description": "笔记名或文件名"
+              "description": "条目名称或文件名"
             },
             "newName": {
               "type": "string",
-              "description": "新笔记名"
-            },
-            "category": {
-              "type": "string",
-              "description": "笔记所在分类名"
-            }
-          },
-          "required": [
-            "name",
-            "newName"
-          ]
-        }
-      },
-      {
-        "name": "xReader_deleteCharacter",
-        "displayName": "%languageModelTools.deleteCharacter.displayName%",
-        "toolReferenceName": "deleteCharacter",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除 角色卡/ 下的角色卡 md。name 为角色名（不含扩展名）。删除前会向用户确认。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "name": {
-              "type": "string",
-              "description": "角色名"
-            }
-          },
-          "required": [
-            "name"
-          ]
-        }
-      },
-      {
-        "name": "xReader_renameCharacter",
-        "displayName": "%languageModelTools.renameCharacter.displayName%",
-        "toolReferenceName": "renameCharacter",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名 角色卡/ 下的角色卡 md。name 可用角色名或文件名。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "name": {
-              "type": "string",
-              "description": "角色名或文件名"
-            },
-            "newName": {
-              "type": "string",
-              "description": "新角色名"
+              "description": "新条目名称"
             }
           },
           "required": [
@@ -1235,35 +1293,6 @@
           },
           "required": [
             "name"
-          ]
-        }
-      },
-      {
-        "name": "xReader_renameWorldEntry",
-        "displayName": "%languageModelTools.renameWorldEntry.displayName%",
-        "toolReferenceName": "renameWorldEntry",
-        "canBeReferencedInPrompt": true,
-        "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名 世界书/ 下的条目 md。name 可用条目名称或文件名。",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "book": {
-              "type": "string",
-              "description": "书文件夹名，省略时使用当前书架选中的书"
-            },
-            "name": {
-              "type": "string",
-              "description": "条目名称或文件名"
-            },
-            "newName": {
-              "type": "string",
-              "description": "新条目名称"
-            }
-          },
-          "required": [
-            "name",
-            "newName"
           ]
         }
       }
@@ -1310,7 +1339,7 @@
         {
           "command": "xReader.refreshBookshelf",
           "when": "view == xReader.bookshelf",
-          "group": "navigation@3"
+          "group": "navigation@4"
         },
         {
           "command": "xReader.newShelf",
@@ -1320,7 +1349,7 @@
         {
           "command": "xReader.resetHistory",
           "when": "view == xReader.bookshelf && !xReader.noLibrary",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "xReader.newWorldEntry",
@@ -1390,19 +1419,19 @@
           "group": "inline@1"
         },
         {
-          "command": "xReader.deleteChapter",
+          "command": "xReader.newChapterVersion",
           "when": "view == xReader.chapters && viewItem == chapter",
           "group": "inline@2"
+        },
+        {
+          "command": "xReader.deleteChapter",
+          "when": "view == xReader.chapters && viewItem == chapter",
+          "group": "inline@3"
         },
         {
           "command": "xReader.moveChapter",
           "when": "view == xReader.chapters && viewItem == chapter",
           "group": "1_modify@1"
-        },
-        {
-          "command": "xReader.newChapterVersion",
-          "when": "view == xReader.chapters && viewItem == chapter",
-          "group": "inline@3"
         },
         {
           "command": "xReader.setPrimaryChapterVersion",

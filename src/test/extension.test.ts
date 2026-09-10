@@ -14,7 +14,7 @@ import {
 	NOTES_DIR,
 	WORLD_DIR,
 } from '../services/bookFactory';
-import { chapterRelPath, LibraryService } from '../services/library';
+import { chapterRelPath, LibraryService, parseChapterFilePath } from '../services/library';
 import {
 	buildChapterMarkdown,
 	buildChapterSummaryMarkdown,
@@ -71,6 +71,33 @@ suite('markdown helpers', () => {
 		assert.deepStrictEqual(parseChapterFileName('0010-第一章 雨夜.md'), { seq: 10, title: '第一章 雨夜' });
 		assert.deepStrictEqual(parseChapterFileName('5-手写序号.md'), { seq: 5, title: '手写序号' });
 		assert.strictEqual(parseChapterFileName('readme.md'), undefined);
+	});
+
+	test('parseChapterFilePath 解析书/卷/章节，拒绝非章节文件与更深层级', () => {
+		const bookDir = path.join(path.sep, 'lib', '书A');
+		assert.deepStrictEqual(parseChapterFilePath(path.join(bookDir, CHAPTERS_DIR, '0001-雨夜.md')), {
+			bookDir,
+			volumeDir: undefined,
+			fileName: '0001-雨夜.md',
+		});
+		assert.deepStrictEqual(parseChapterFilePath(path.join(bookDir, CHAPTERS_DIR, '第一卷', '0002-清晨.md')), {
+			bookDir,
+			volumeDir: '第一卷',
+			fileName: '0002-清晨.md',
+		});
+		assert.strictEqual(parseChapterFilePath(path.join(bookDir, CHAPTERS_DIR, 'readme.md')), undefined);
+		assert.strictEqual(
+			parseChapterFilePath(path.join(bookDir, CHAPTERS_DIR, '第一卷', '第二层', '0001-雨夜.md')),
+			undefined
+		);
+		assert.strictEqual(parseChapterFilePath(path.join(bookDir, NOTES_DIR, '0001-想法.md')), undefined);
+		// 库路径本身含同名分支时取最后一个「章节」段
+		const tricky = path.join(path.sep, 'lib', '我的章节摘录');
+		assert.deepStrictEqual(parseChapterFilePath(path.join(tricky, CHAPTERS_DIR, '0003-x.md')), {
+			bookDir: tricky,
+			volumeDir: undefined,
+			fileName: '0003-x.md',
+		});
 	});
 
 	test('extractMarkdownTitle 提取一级标题，忽略二级标题与正文', () => {

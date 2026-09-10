@@ -12,6 +12,7 @@ import {
 	META_FILE,
 	NOTE_CHAPTER_FM_RE,
 	NOTES_DIR,
+	parseChapterFilePath,
 	VERSIONS_DIR,
 	WORLD_DIR,
 } from './services/library';
@@ -239,13 +240,10 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						book = parsed.book;
 						fileRel = parsed.fileRel;
 						// 打开的是章节文件时解析章节
-						const segments = editorPath.split(path.sep);
-						const chapterIdx = segments.lastIndexOf(CHAPTERS_DIR);
-						if (chapterIdx === segments.length - 2 || chapterIdx === segments.length - 3) {
-							const fileName = segments[segments.length - 1];
-							const volumeDir = chapterIdx === segments.length - 3 ? segments[chapterIdx + 1] : undefined;
+						const target = parseChapterFilePath(editorPath);
+						if (target) {
 							chapter = (await library.listChapters(book)).find(
-								(c) => chapterRelPath(c) === chapterRelPath({ fileName, volumeDir })
+								(c) => chapterRelPath(c) === chapterRelPath(target)
 							);
 						}
 					}
@@ -264,9 +262,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						chapter = await library.findChapterByProgress(book, progress);
 					}
 				}
-				const [chapters, summaryStates, meta] = await Promise.all([
-					library.listChapters(book),
-					library.listChapterSummaryStates(book),
+				// 分卷扫描一次，章节列表与摘要状态共用
+				const volumes = await library.listVolumes(book);
+				const chapters = volumes.flatMap((volume) => volume.chapters);
+				const [summaryStates, meta] = await Promise.all([
+					library.listChapterSummaryStates(book, volumes),
 					library.readMetadata(book),
 				]);
 				const index = chapter ? chapters.findIndex((c) => chapterRelPath(c) === chapterRelPath(chapter)) : -1;
@@ -317,13 +317,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const volumeName = options.input.volume?.trim();
-				const [volumes, summaryStates] = await Promise.all([
-					library.listVolumes(book),
-					library.listChapterSummaryStates(book),
-				]);
+				const volumes = await library.listVolumes(book);
 				if (volumes.length === 0) {
 					return text(`《${book.name}》还没有章节。`);
 				}
+				const summaryStates = await library.listChapterSummaryStates(book, volumes);
 				const targets = volumeName ? [pickVolume(volumes, volumeName)] : volumes;
 				const lines: string[] = [];
 				for (const volume of targets) {
@@ -467,6 +465,16 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			},
 			prepareInvocation: (options) => ({
 				invocationMessage: vscode.l10n.t('Delete chapter version “{0}”', options.input.version),
+				confirmationMessages: {
+					title: vscode.l10n.t('Delete Version'),
+					message: new vscode.MarkdownString(
+						vscode.l10n.t(
+							'Delete version “{0}” of chapter “{1}”?',
+							options.input.version,
+							options.input.chapter
+						)
+					),
+				},
 			}),
 		}),
 
@@ -518,6 +526,25 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				}),
 			}
 		),
+
+		vscode.lm.registerTool<BookInput & { chapter: string; volume: string }>('xReader_moveChapter', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const chapter = await requireChapter(library, book, options.input.chapter);
+				const target = pickVolume(await library.listVolumes(book), options.input.volume);
+				await library.moveChapter(book, chapter, target.dirName);
+				return text(
+					`已把第${chapter.seq}章「${chapter.title}」从 ${chapter.volumeDir ?? '（章节根目录）'} 移动到分卷「${target.name}」（${CHAPTERS_DIR}/${target.dirName ?? '（根目录）'}）。章节序号不变，导航、摘要镜像、笔记关联与阅读进度已同步。`
+				);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t(
+					'Move chapter “{0}” to volume “{1}”',
+					options.input.chapter,
+					options.input.volume
+				),
+			}),
+		}),
 
 		vscode.lm.registerTool<BookInput & { oldName: string; newName: string }>('xReader_renameVolume', {
 			async invoke(options) {

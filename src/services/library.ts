@@ -70,6 +70,34 @@ export function chapterRelPath(chapter: Pick<ChapterFile, 'fileName' | 'volumeDi
 	return chapter.volumeDir ? `${chapter.volumeDir}/${chapter.fileName}` : chapter.fileName;
 }
 
+/** 章节文件的路径构成（书目录 + 分卷 + 文件名）。 */
+export interface ChapterFilePath {
+	/** 书文件夹绝对路径 */
+	bookDir: string;
+	/** 所在卷的目录名；undefined 表示 章节/ 根 */
+	volumeDir: string | undefined;
+	/** 章节文件名 */
+	fileName: string;
+}
+
+/** 从绝对路径解析章节文件（支持 章节/根 与 章节/分卷/ 两层；取最后一个「章节」段，库路径本身含同名目录时不误判）；非章节文件返回 undefined。 */
+export function parseChapterFilePath(filePath: string): ChapterFilePath | undefined {
+	const segments = filePath.split(path.sep);
+	const idx = segments.lastIndexOf(CHAPTERS_DIR);
+	if (idx < 0 || (idx !== segments.length - 2 && idx !== segments.length - 3)) {
+		return undefined;
+	}
+	const fileName = segments[segments.length - 1];
+	if (!parseChapterFileName(fileName)) {
+		return undefined;
+	}
+	return {
+		bookDir: segments.slice(0, idx).join(path.sep),
+		volumeDir: idx === segments.length - 3 ? segments[idx + 1] : undefined,
+		fileName,
+	};
+}
+
 /** 路径是否存在。 */
 async function pathExists(filePath: string): Promise<boolean> {
 	try {
@@ -853,11 +881,12 @@ export class LibraryService {
 			const ref = refs.get(oldRel);
 			if (ref) {
 				const prefix = relDir === NOTES_DIR ? '../' : '../../';
+				// 均用函数形式替换：路径/标题里的 $& 等不被当作替换模式
 				return md
-					.replace(NOTE_CHAPTER_LINE_RE, `chapter: ${JSON.stringify(ref.relPath)}`)
+					.replace(NOTE_CHAPTER_LINE_RE, () => `chapter: ${JSON.stringify(ref.relPath)}`)
 					.replace(
 						/^> 关联章节：.*$/m,
-						`> 关联章节：[${escapeMdLinkText(ref.title)}](<${prefix}${CHAPTERS_DIR}/${ref.relPath}>)`
+						() => `> 关联章节：[${escapeMdLinkText(ref.title)}](<${prefix}${CHAPTERS_DIR}/${ref.relPath}>)`
 					);
 			}
 			return md
@@ -877,8 +906,14 @@ export class LibraryService {
 			}
 			if (newVolume) {
 				return md
-					.replace(NOTE_CHAPTER_LINE_RE, `chapter: ${JSON.stringify(`${newVolume}/${link.slice(prefix.length)}`)}`)
-					.replace(new RegExp(`(\\(<[^>]*${CHAPTERS_DIR}/)${escaped}/`), `$1${newVolume}/`);
+					.replace(
+						NOTE_CHAPTER_LINE_RE,
+						() => `chapter: ${JSON.stringify(`${newVolume}/${link.slice(prefix.length)}`)}`
+					)
+					.replace(
+						new RegExp(`(\\(<[^>]*${CHAPTERS_DIR}/)${escaped}/`),
+						(_match, dirPrefix: string) => `${dirPrefix}${newVolume}/`
+					);
 			}
 			return md
 				.replace(/^chapter:[^\n]*\n?/m, '')
@@ -902,11 +937,11 @@ export class LibraryService {
 		}
 		const prefix = volumeDir ? '../../' : '../';
 		const href = `${prefix}${CHAPTERS_DIR}/${volumeDir ? volumeDir + '/' : ''}${fileName}`;
-		let updated = md.replace(/^> 原文：.*$/m, `> 原文：[${fileName}](<${href}>)`);
+		let updated = md.replace(/^> 原文：.*$/m, () => `> 原文：[${escapeMdLinkText(fileName)}](<${href}>)`);
 		if (oldTitle) {
 			const newTitle = parseChapterFileName(fileName)?.title;
 			if (newTitle) {
-				updated = updated.replace(`# ${oldTitle} · 摘要`, `# ${newTitle} · 摘要`);
+				updated = updated.replace(`# ${oldTitle} · 摘要`, () => `# ${newTitle} · 摘要`);
 			}
 		}
 		if (updated !== md) {
@@ -932,6 +967,7 @@ export class LibraryService {
 		if (newFileName === chapter.fileName) {
 			// 文件名不变时也同步内容首行，保证显示标题与输入一致
 			await this.updateChapterContentTitle(oldPath, displayTitle);
+			await this.commitAndRefresh(`同步章节标题 ${chapterRelPath(chapter)} →「${displayTitle}」`);
 			return chapter.fileName;
 		}
 		const newPath = this.chapterPath(book, newFileName, chapter.volumeDir);
@@ -965,7 +1001,8 @@ export class LibraryService {
 	private async updateChapterContentTitle(filePath: string, title: string): Promise<void> {
 		try {
 			const md = await fs.readFile(filePath, 'utf8');
-			const updated = md.replace(/^\uFEFF?#(?!#)\s*.*$/m, `# ${title}`);
+			// 用函数形式替换，标题里的 $& 等不被当作替换模式
+			const updated = md.replace(/^\uFEFF?#(?!#)\s*.*$/m, () => `# ${title}`);
 			if (updated !== md) {
 				await fs.writeFile(filePath, updated, 'utf8');
 			}
@@ -1007,7 +1044,7 @@ export class LibraryService {
 		try {
 			const meta = await fs.readFile(metaPath, 'utf8');
 			// 手写无引号的 title 一并覆盖，统一写成 JSON 字符串
-			const updated = meta.replace(/^title:[^\n]*$/m, `title: ${JSON.stringify(target)}`);
+			const updated = meta.replace(/^title:[^\n]*$/m, () => `title: ${JSON.stringify(target)}`);
 			if (updated !== meta) {
 				await fs.writeFile(metaPath, updated, 'utf8');
 			}
@@ -1049,11 +1086,7 @@ export class LibraryService {
 		const chapters = await this.listChapters(book);
 		const seq = chapters.reduce((max, c) => Math.max(max, c.seq), 0) + 1;
 		const fileName = chapterFileName(seq, title);
-		const filePath = this.chapterPath(book, fileName, volumeDir);
-		await fs.mkdir(path.dirname(filePath), { recursive: true });
-		await fs.writeFile(filePath, buildChapterMarkdown(title, ''), 'utf8');
-		await this.seedNewChapterNav(book, fileName, volumeDir, title);
-		await this.rewriteBookChapterNavs(book);
+		await this.writeNewChapter(book, fileName, volumeDir, title);
 		await this.commitAndRefresh(`新建章节 ${chapterRelPath({ fileName, volumeDir })}`);
 		return fileName;
 	}
@@ -1085,13 +1118,23 @@ export class LibraryService {
 		}
 		const volumeDir = anchor.volumeDir;
 		const fileName = chapterFileName(plan.seq, title);
+		await this.writeNewChapter(book, fileName, volumeDir, title);
+		await this.commitAndRefresh(`插入章节 ${chapterRelPath({ fileName, volumeDir })}`);
+		return { fileName, renumbered };
+	}
+
+	/** 落盘新章节文件（建目录 → 写模板 → 接上前后导航），新建与插章共用（导航重写后由调用方提交）。 */
+	private async writeNewChapter(
+		book: BookInfo,
+		fileName: string,
+		volumeDir: string | undefined,
+		title: string
+	): Promise<void> {
 		const filePath = this.chapterPath(book, fileName, volumeDir);
 		await fs.mkdir(path.dirname(filePath), { recursive: true });
 		await fs.writeFile(filePath, buildChapterMarkdown(title, ''), 'utf8');
 		await this.seedNewChapterNav(book, fileName, volumeDir, title);
 		await this.rewriteBookChapterNavs(book);
-		await this.commitAndRefresh(`插入章节 ${chapterRelPath({ fileName, volumeDir })}`);
-		return { fileName, renumbered };
 	}
 
 	/** 给刚创建的新章节写入带前后链接的内容（模板本身没有导航段，其它章节的导航交给 rewriteBookChapterNavs）。 */
@@ -1247,12 +1290,12 @@ export class LibraryService {
 		);
 	}
 
-	/** 全书章节摘要状态（键同 chapterRelPath）：摘要缺失为 missing，章节比摘要更新为 stale。 */
-	async listChapterSummaryStates(book: BookInfo): Promise<Map<string, SummaryState>> {
-		const volumes = await this.listVolumes(book);
+	/** 全书章节摘要状态（键同 chapterRelPath）：摘要缺失为 missing，章节比摘要更新为 stale。已扫描过分卷时传入 volumes 避免重复扫描。 */
+	async listChapterSummaryStates(book: BookInfo, volumes?: ChapterVolume[]): Promise<Map<string, SummaryState>> {
+		const list = volumes ?? (await this.listVolumes(book));
 		const states = new Map<string, SummaryState>();
 		await Promise.all(
-			volumes.flatMap((volume) => volume.chapters).map(async (chapter) => {
+			list.flatMap((volume) => volume.chapters).map(async (chapter) => {
 				const summaryMtime = await this.mtime(this.summaryPath(book, chapter.fileName, chapter.volumeDir));
 				if (summaryMtime === undefined) {
 					states.set(chapterRelPath(chapter), 'missing');
@@ -1549,7 +1592,7 @@ export class LibraryService {
 		const pending = [...this.pendingChapterSync];
 		this.pendingChapterSync.clear();
 		for (const filePath of pending) {
-			const parsed = this.parseChapterFile(filePath);
+			const parsed = parseChapterFilePath(filePath);
 			if (!parsed) {
 				continue;
 			}
@@ -1570,26 +1613,6 @@ export class LibraryService {
 	}
 
 	private isChapterFile(filePath: string): boolean {
-		return this.parseChapterFile(filePath) !== undefined;
-	}
-
-	/** 解析 章节/ 目录下的章节文件路径；非章节文件返回 undefined。 */
-	private parseChapterFile(
-		filePath: string
-	): { bookDir: string; volumeDir: string | undefined; fileName: string } | undefined {
-		const segments = filePath.split(path.sep);
-		const idx = segments.lastIndexOf(CHAPTERS_DIR);
-		if (idx < 0 || (idx !== segments.length - 2 && idx !== segments.length - 3)) {
-			return undefined;
-		}
-		const fileName = segments[segments.length - 1];
-		if (!parseChapterFileName(fileName)) {
-			return undefined;
-		}
-		return {
-			bookDir: segments.slice(0, idx).join(path.sep),
-			volumeDir: idx === segments.length - 3 ? segments[idx + 1] : undefined,
-			fileName,
-		};
+		return parseChapterFilePath(filePath) !== undefined;
 	}
 }

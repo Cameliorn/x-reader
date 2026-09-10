@@ -80,6 +80,7 @@
     "languageModelTools.createVolume.displayName": "创建分卷",
     "languageModelTools.createChapter.displayName": "新建章节",
     "languageModelTools.insertChapter.displayName": "插入章节",
+    "languageModelTools.moveChapter.displayName": "移动章节到分卷",
     "languageModelTools.renameVolume.displayName": "重命名分卷",
     "languageModelTools.deleteVolume.displayName": "删除分卷",
     "languageModelTools.deleteBook.displayName": "删除书籍",

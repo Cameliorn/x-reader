@@ -49,16 +49,17 @@ extension.ts          — 入口（activate），注册命令、树视图与阅�
 - `元数据.md` 的 frontmatter 字段与 `## 简介` / `## 写作要求` 等小节完全由用户或 agent 维护（**不从导入的 txt 解析**），解析见 `parseBookMetadata`，由「元数据」视图展示（字段与小节均可点击跳到对应行编辑；文件缺失时 `LibraryService.ensureMetadata` 按模板重建）。
 - `笔记/` 支持分类子目录（即分类）；笔记可用 frontmatter `chapter` 字段（章节相对路径）关联章节，也可完全独立。
 - **Agent 工具**（`vscode.lm.registerTool`，声明于 `contributes.languageModelTools`，按 书→卷→章→笔记→角色卡→世界书 分组）：
-  - 书：`xReader_getCurrentChapter` / `xReader_createBook` / `xReader_listBooks` / `xReader_renameBook` / `xReader_deleteBook`
+  - 书：`xReader_getCurrentChapter` / `xReader_listBooks` / `xReader_createBook` / `xReader_renameBook` / `xReader_deleteBook`
   - 分卷：`xReader_listVolumes` / `xReader_createVolume` / `xReader_renameVolume` / `xReader_deleteVolume`
-  - 章节：`xReader_listChapters` / `xReader_listChapterVersions` / `xReader_createChapterVersion` / `xReader_setPrimaryChapterVersion` / `xReader_deleteChapterVersion` / `xReader_createChapter` / `xReader_insertChapter` / `xReader_renameChapter` / `xReader_deleteChapter` / `xReader_setProgress` / `xReader_readChapterSummary` / `xReader_readIntervalSummary`
+  - 章节：`xReader_listChapters` / `xReader_listChapterVersions` / `xReader_createChapterVersion` / `xReader_setPrimaryChapterVersion` / `xReader_deleteChapterVersion` / `xReader_createChapter` / `xReader_insertChapter` / `xReader_moveChapter` / `xReader_renameChapter` / `xReader_deleteChapter` / `xReader_setProgress` / `xReader_readChapterSummary` / `xReader_readIntervalSummary`
   - 笔记：`xReader_listNotes` / `xReader_createNote` / `xReader_renameNote` / `xReader_deleteNote` / `xReader_renameNoteCategory` / `xReader_deleteNoteCategory`
   - 角色卡：`xReader_listCharacters` / `xReader_createCharacter` / `xReader_renameCharacter` / `xReader_deleteCharacter`
   - 世界书：`xReader_listWorldEntries` / `xReader_createWorldEntry` / `xReader_renameWorldEntry` / `xReader_deleteWorldEntry`
-  **分工**：结构化操作（列书/卷/章、读摘要、设置进度、新建/重命名/删除卷章书与条目）用 xReader 工具；章节正文与文件内容的读写搜索直接用内置文件工具。写操作在 LibraryService 层统一做 git 快照提交。
+  **分工**：结构化操作（列书/卷/章、读摘要、设置进度、新建/移动/重命名/删除卷章书与条目）用 xReader 工具；章节正文与文件内容的读写搜索直接用内置文件工具。写操作在 LibraryService 层统一做 git 快照提交。
   **LibraryService 内部约定**：写操作结尾用 `commitAndRefresh(消息)` 一步完成快照 + 视图刷新（`commit` 只提交不刷新）；章节与摘要镜像路径一律经 `chapterPath` / `summaryPath` 拼接，章节改名、跨卷移动、插入顺延都复用 `relocateChapterFiles`（同时搬运摘要镜像）；阅读进度只经 `getProgress` / `setProgress` / `clearProgress` 读写；笔记章节关联用 `updateNotesChapterRef`（批量版 `updateNotesChapterRefs`，一次遍历）。tools.ts 侧复用 `requireChapter` / `pickVolume` / `requireEntry` / `resolveNoteDir` / `requireNote` 做引用解析与报错列现有项。
 - **章节改名两个等价入口，效果一致**：`xReader_renameChapter`（或章节目录右键「重命名章节」）与直接编辑章节内容首行 `# 标题` 后保存——都会级联更新：文件名（序号不变，标题取清洗版）、内容首行标题、相邻章导航链接、章节摘要镜像、关联笔记引用与阅读进度（watcher 检测首行标题变化自动触发，见 `LibraryService.syncChapterTitle`）。**不要用文件工具直接重命名/移动 章节/ 下的 md**，否则相邻章导航留下死链、进度与笔记关联丢失。
 - **插章用 `xReader_insertChapter`**（`after`/`before` 指定参照章节，二者只给一个；新章节归入参照章节所在分卷）：序号有空档时直接插入，无空档时该位置及其后章节序号顺延 +1（`planChapterInsertSeq` 决策，`LibraryService.shiftChapterSeqs` 按序号降序改名并同步摘要镜像、笔记关联与进度），最后统一重写导航并提交一次快照。手工新建/改名 章节/ 下的 md 来插章同样会留下死链与失联数据。
+- **跨卷移动用 `xReader_moveChapter`**（`LibraryService.moveChapter`，序号与文件名不变，搬运摘要镜像、重写全书导航、迁移进度与笔记关联）；用文件工具直接挪 章节/ 下的 md 会留下死链与失联数据。
 - `xReader_getCurrentChapter` 无参数：从活动编辑器解析当前书与章节（打开书内任意文件即可定位），回退当前书架选中的书与阅读进度，并一并返回本书 `元数据.md` 的字段与各小节（简介、写作要求等，agent 无需再读一遍文件）。先调用它取得当前上下文，可省略其他工具的 `book` 参数；操作其他书时先 `xReader_listBooks` 或显式传 `book`（书文件夹名）。
 - `.vscodeignore` 排除了 `src/`（含测试）与构建文件 — 运行时代码位于 `dist/`。
 

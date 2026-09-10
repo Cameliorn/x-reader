@@ -80,6 +80,7 @@
     "languageModelTools.createVolume.displayName": "Create Volume",
     "languageModelTools.createChapter.displayName": "Create Chapter",
     "languageModelTools.insertChapter.displayName": "Insert Chapter",
+    "languageModelTools.moveChapter.displayName": "Move Chapter",
     "languageModelTools.renameVolume.displayName": "Rename Volume",
     "languageModelTools.deleteVolume.displayName": "Delete Volume",
     "languageModelTools.deleteBook.displayName": "Delete Book",
