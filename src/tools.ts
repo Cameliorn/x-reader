@@ -12,6 +12,7 @@ import {
 	META_FILE,
 	NOTE_CHAPTER_FM_RE,
 	NOTES_DIR,
+	VERSIONS_DIR,
 	WORLD_DIR,
 } from './services/library';
 import type { BookMetadata } from './services/markdown';
@@ -21,7 +22,7 @@ const text = (value: string): vscode.LanguageModelToolResult =>
 	new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(value)]);
 
 /** 书中已知子目录：活动编辑器位于其中任意一层时即可定位所属书。 */
-const BOOK_SUBDIRS = [CHAPTERS_DIR, WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR];
+const BOOK_SUBDIRS = [CHAPTERS_DIR, VERSIONS_DIR, WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR];
 
 /** 从活动编辑器路径解析所属书（书内任意文件）与相对路径；非库内文件返回 undefined。 */
 function bookFromEditorPath(editorPath: string, books: BookInfo[]): { book: BookInfo; fileRel: string } | undefined {
@@ -327,9 +328,12 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				const lines: string[] = [];
 				for (const volume of targets) {
 					lines.push(`【${volume.name}】`);
+					const versionCounts = await library.listVolumeVersionCounts(book, volume.dirName);
 					for (const c of volume.chapters) {
 						const mark = summaryMark(summaryStates.get(chapterRelPath(c)));
-						lines.push(`${chapterRelPath(c)}｜第${c.seq}章｜${c.title}${mark}`);
+						const versionCount = versionCounts.get(c.fileName.replace(/\.md$/, ''));
+						const versionMark = versionCount ? `｜版本×${versionCount}` : '';
+						lines.push(`${chapterRelPath(c)}｜第${c.seq}章｜${c.title}${mark}${versionMark}`);
 					}
 				}
 				return text(`《${book.name}》章节（相对路径｜序号｜标题）：\n${lines.join('\n')}`);
@@ -404,6 +408,65 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			},
 			prepareInvocation: (options) => ({
 				invocationMessage: vscode.l10n.t('Create volume “{0}”', options.input.name),
+			}),
+		}),
+
+		vscode.lm.registerTool<BookInput & { chapter: string }>('xReader_listChapterVersions', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const chapter = await requireChapter(library, book, options.input.chapter);
+				const versions = await library.listChapterVersions(book, chapter);
+				if (versions.length === 0) {
+					return text(`第${chapter.seq}章「${chapter.title}」还没有备选版本。主版本：${chapterRelPath(chapter)}`);
+				}
+				const lines = versions.map((v) => v.name).join('、');
+				return text(
+					`第${chapter.seq}章「${chapter.title}」的备选版本（主版本：${chapterRelPath(chapter)}）：\n${lines}`
+				);
+			},
+			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Chapter Versions') }),
+		}),
+
+		vscode.lm.registerTool<BookInput & { chapter: string; name?: string }>('xReader_createChapterVersion', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const chapter = await requireChapter(library, book, options.input.chapter);
+				const filePath = await library.createChapterVersion(book, chapter, options.input.name);
+				return text(
+					`已把第${chapter.seq}章「${chapter.title}」当前主版本内容存为备选版本：${filePath}。可用文件工具编辑该版本。`
+				);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Create chapter version “{0}”', options.input.name ?? ''),
+			}),
+		}),
+
+		vscode.lm.registerTool<BookInput & { chapter: string; version: string; keepOldName?: string }>(
+			'xReader_setPrimaryChapterVersion',
+			{
+				async invoke(options) {
+					const book = await resolveBook(library, options.input.book);
+					const chapter = await requireChapter(library, book, options.input.chapter);
+					await library.promoteChapterVersion(book, chapter, options.input.version, options.input.keepOldName);
+					return text(
+						`已把版本「${options.input.version}」设为第${chapter.seq}章「${chapter.title}」的主版本（${chapterRelPath(chapter)}），原主版本内容已存回版本库。章节摘要已转为待维护，需要重新保存摘要。`
+					);
+				},
+				prepareInvocation: (options) => ({
+					invocationMessage: vscode.l10n.t('Set chapter version “{0}” as primary', options.input.version),
+				}),
+			}
+		),
+
+		vscode.lm.registerTool<BookInput & { chapter: string; version: string }>('xReader_deleteChapterVersion', {
+			async invoke(options) {
+				const book = await resolveBook(library, options.input.book);
+				const chapter = await requireChapter(library, book, options.input.chapter);
+				await library.deleteChapterVersion(book, chapter, options.input.version);
+				return text(`已删除第${chapter.seq}章「${chapter.title}」的备选版本「${options.input.version}」。`);
+			},
+			prepareInvocation: (options) => ({
+				invocationMessage: vscode.l10n.t('Delete chapter version “{0}”', options.input.version),
 			}),
 		}),
 

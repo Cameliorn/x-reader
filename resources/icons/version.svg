@@ -1,0 +1,11 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16">
+    <rect width="16" height="16" fill="#fff"/>
+    <path d="M7.3 4.5h4.1l2.6 2.6v6.9a.8.8 0 0 1-.8.8H7.3a.8.8 0 0 1-.8-.8V5.3a.8.8 0 0 1 .8-.8z" stroke="#000" stroke-width="1.3" fill="none"/>
+    <path d="M11.4 4.4v2.7h2.7" stroke="#000" stroke-width="1.1" fill="none"/>
+  </mask>
+  <g mask="url(#cut)">
+    <path fill="#6e6e6e" d="M3 1.5h5.4a.8.8 0 0 1 .8.8v8.4a.8.8 0 0 1-.8.8H3a.8.8 0 0 1-.8-.8V2.3a.8.8 0 0 1 .8-.8z"/>
+    <path fill="#6e6e6e" d="M7.3 4.5h4.1l2.6 2.6v6.9a.8.8 0 0 1-.8.8H7.3a.8.8 0 0 1-.8-.8V5.3a.8.8 0 0 1 .8-.8z"/>
+  </g>
+</svg>

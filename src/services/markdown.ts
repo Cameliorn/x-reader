@@ -215,14 +215,13 @@ export function buildChapterMarkdown(title: string, body: string, prevRelPath?: 
 }
 
 /** 元数据.md：frontmatter 存字段，正文的"写作要求"充当 agent 的常驻 instructions。 */
-export function buildMetadataMarkdown(title: string, sourceFileName: string): string {
+export function buildMetadataMarkdown(title: string): string {
 	const date = new Date().toISOString().slice(0, 10);
 	return [
 		'---',
 		`title: ${JSON.stringify(title)}`,
 		'author: ""',
 		`created: ${date}`,
-		`source: ${JSON.stringify(sourceFileName)}`,
 		'---',
 		'',
 		'## 简介',

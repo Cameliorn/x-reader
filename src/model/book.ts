@@ -18,6 +18,14 @@ export interface BookInfo {
 	dir: string;
 }
 
+/** 子书架：自定义书籍分组，books 存书文件夹名的链接（不复制书）。 */
+export interface Shelf {
+	/** 子书架名 */
+	name: string;
+	/** 收录的书文件夹名列表 */
+	books: string[];
+}
+
 /** 章节文件：从 `NNNN-标题.md` 文件名解析而来。 */
 export interface ChapterFile {
 	/** 序号（文件名前缀数字） */

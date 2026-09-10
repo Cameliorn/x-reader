@@ -40,16 +40,18 @@ extension.ts          — 入口（activate），注册命令、树视图与阅�
 - **VS Code 目标版本**：`^1.95.0`（Language Model Tools API 的最低稳定版本）。
 - **用户界面文本**使用简体中文；本地化见「关键约定 · 本地化」。
 - **本地化**：静态字符串（displayName/description/命令标题/视图名/配置说明/工具 displayName）在 `package.json` 中写 `%key%` 引用，翻译在 `package.nls.json`（英文默认）+ `package.nls.zh-cn.json`（中文）；代码内 UI 字符串用 `vscode.l10n.t('英文消息', 参数)`，翻译在 `l10n/bundle.l10n.zh-cn.json`（英文源 `bundle.l10n.json` 为清单）。**不本地化**：`modelDescription`（给 agent 的中文提示）与 xReader 工具返回的结果文本（agent 工作域保持中文）。新增 UI 字符串时须同步更新 bundle 文件。
-- 每本书是 `xReader.libraryPath` 下的一个文件夹，包含 `元数据.md` 与 `章节/`、`世界书/`、`角色卡/`、`章节摘要/`、`区间摘要/`、`笔记/` 目录。
+- 每本书是 `xReader.libraryPath` 下的一个文件夹，包含 `元数据.md` 与 `章节/`、`世界书/`、`角色卡/`、`章节摘要/`、`区间摘要/`、`笔记/`、`版本/` 目录。
+- **子书架**：书架视图分两级（子书架 → 书）。内置「默认」子书架收录全部书，不出现在 书架.json 中；自定义子书架存于库根 `书架.json`，只存书文件夹名链接（不复制书）。书改名/删除时经 `LibraryService.updateShelfBookRefs` 级联同步链接；书树节点在自定义子书架下 `contextValue` 为 `shelfBook`（书籍管理操作仍在默认子书架做）。
 - **图标全部自绘**：所有图形都在 `resources/icons/*.svg`（16×16、`fill="#6e6e6e"` 实心基底 + `mask id="cut"` 镂空细节，规范见仓库记忆），命令 `icon`、视图 `name` 图标、Language Model 工具 `icon` 一律写 `resources/icons/xxx.svg` 路径，**不使用内置 codicon `$(...)`**（工具 icon 的字符串非 `$( )` 形式时 VS Code 会按扩展目录解析为图标路径）。唯一例外是状态栏文本与 QuickPick 标签——它们只接受 codicon，故这两处不带图标；树节点状态标记 `●`（读到）/`✓`（摘要最新）/`⚠`（摘要待维护）是文本字形，不属于图标体系。
 - `章节摘要/` 镜像 `章节/` 的分卷结构（同名 `NNNN-标题.md`）；`区间摘要/` 每 10 章一个文件（`NNNN-MMMM.md`，序号取区间首尾章节）；两者点击视图项时按需从模板创建。
+- **章节版本**：`版本/<卷>/<章节文件名去 .md>/<版本名>.md` 存放章节备选版本；主版本始终是 `章节/` 下那个文件，阅读顺序、导航、摘要、进度、笔记关联只认主版本。操作经 `LibraryService.createChapterVersion` / `promoteChapterVersion` / `renameChapterVersion` / `deleteChapterVersion`（`listVolumeVersionCounts` 供章节目录视图显示版本数与展开箭头）；`relocateChapterFiles` 级联搬运版本目录（章节改名/跨卷移动/插章顺延），`removeChapter` 连带删除版本目录。切换主版本是**内容原地替换**（原主版本自动存为版本「原版」），摘要靠 mtime 自动转待维护。章节目录视图中章节节点 `contextValue` 仍为 `chapter`，版本子节点为 `chapterVersion`。
 - **摘要状态靠文件修改时间判定**（`SummaryState`: missing / ok / stale）：章节文件比其摘要镜像新即为「待维护」，区间摘要在区间内任一章节更新后同样转为待维护；重新保存摘要即自动恢复最新，无需额外状态文件。因此**重写章节文件时必须只做必要写入**：`rewriteChapterNav` 这类仅导航变化的改动会用 `fs.utimes` 还原原修改时间，避免插章/删章把相邻章摘要误判成待维护。视图标 `⚠`/`✓`，agent 侧见 `xReader_listChapters` 的「｜摘要待维护」与读摘要工具返回的过期提示。
 - `元数据.md` 的 frontmatter 字段与 `## 简介` / `## 写作要求` 等小节完全由用户或 agent 维护（**不从导入的 txt 解析**），解析见 `parseBookMetadata`，由「元数据」视图展示（字段与小节均可点击跳到对应行编辑；文件缺失时 `LibraryService.ensureMetadata` 按模板重建）。
 - `笔记/` 支持分类子目录（即分类）；笔记可用 frontmatter `chapter` 字段（章节相对路径）关联章节，也可完全独立。
 - **Agent 工具**（`vscode.lm.registerTool`，声明于 `contributes.languageModelTools`，按 书→卷→章→笔记→角色卡→世界书 分组）：
   - 书：`xReader_getCurrentChapter` / `xReader_createBook` / `xReader_listBooks` / `xReader_renameBook` / `xReader_deleteBook`
   - 分卷：`xReader_listVolumes` / `xReader_createVolume` / `xReader_renameVolume` / `xReader_deleteVolume`
-  - 章节：`xReader_listChapters` / `xReader_createChapter` / `xReader_insertChapter` / `xReader_renameChapter` / `xReader_deleteChapter` / `xReader_setProgress` / `xReader_readChapterSummary` / `xReader_readIntervalSummary`
+  - 章节：`xReader_listChapters` / `xReader_listChapterVersions` / `xReader_createChapterVersion` / `xReader_setPrimaryChapterVersion` / `xReader_deleteChapterVersion` / `xReader_createChapter` / `xReader_insertChapter` / `xReader_renameChapter` / `xReader_deleteChapter` / `xReader_setProgress` / `xReader_readChapterSummary` / `xReader_readIntervalSummary`
   - 笔记：`xReader_listNotes` / `xReader_createNote` / `xReader_renameNote` / `xReader_deleteNote` / `xReader_renameNoteCategory` / `xReader_deleteNoteCategory`
   - 角色卡：`xReader_listCharacters` / `xReader_createCharacter` / `xReader_renameCharacter` / `xReader_deleteCharacter`
   - 世界书：`xReader_listWorldEntries` / `xReader_createWorldEntry` / `xReader_renameWorldEntry` / `xReader_deleteWorldEntry`

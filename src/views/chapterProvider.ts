@@ -1,26 +1,71 @@
 import * as vscode from 'vscode';
-import type { ChapterFile, ChapterVolume } from '../model/book';
-import { chapterRelPath, CHAPTERS_DIR, LibraryService } from '../services/library';
+import type { BookInfo, ChapterFile, ChapterVolume, EntryFile } from '../model/book';
+import { chapterRelPath, CHAPTERS_DIR, LibraryService, VERSIONS_DIR } from '../services/library';
 import { LibraryTreeProvider } from './libraryTreeProvider';
 
-type ChapterNode = ChapterVolume | ChapterFile;
+/** 章节的备选版本节点。 */
+export interface ChapterVersionNode extends EntryFile {
+	/** 区分于卷/章节节点的判别字段 */
+	kind: 'version';
+	/** 所属章节 */
+	chapter: ChapterFile;
+}
 
-/** 章节目录视图：按卷分组展示当前书的章节文件，● 标记上次读到。 */
+type ChapterNode = ChapterVolume | ChapterFile | ChapterVersionNode;
+
+/** 章节目录视图：按卷分组展示当前书的章节文件（有备选版本的章节可展开），● 标记上次读到。 */
 export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
+	/** 章节相对路径 → 备选版本数（getChildren 组装卷时填充）。 */
+	private versionCounts = new Map<string, number>();
+
 	constructor(
 		library: LibraryService,
 		private readonly volumeIcon: vscode.Uri,
-		private readonly chapterIcon: vscode.Uri
+		private readonly chapterIcon: vscode.Uri,
+		private readonly versionIcon: vscode.Uri
 	) {
 		super(library);
+	}
+
+	protected onLibraryChanged(): void {
+		this.versionCounts.clear();
 	}
 
 	async getChildren(element?: ChapterNode): Promise<ChapterNode[]> {
 		if (element === undefined) {
 			const book = this.library.getCurrentBook();
-			return book ? this.library.listVolumes(book) : [];
+			return book ? this.loadVolumes(book) : [];
 		}
-		return 'chapters' in element ? element.chapters : [];
+		if ('chapters' in element) {
+			return element.chapters;
+		}
+		// ChapterFile 有 seq，版本节点没有；据此收窄联合类型
+		if (!('seq' in element)) {
+			return [];
+		}
+		const book = this.library.getCurrentBook();
+		if (!book) {
+			return [];
+		}
+		const versions = await this.library.listChapterVersions(book, element);
+		return versions.map((v) => ({ kind: 'version' as const, chapter: element, ...v }));
+	}
+
+	/** 列出分卷并统计各章节的备选版本数（每卷一次目录扫描）。 */
+	private async loadVolumes(book: BookInfo): Promise<ChapterVolume[]> {
+		const volumes = await this.library.listVolumes(book);
+		await Promise.all(
+			volumes.map(async (volume) => {
+				const counts = await this.library.listVolumeVersionCounts(book, volume.dirName);
+				for (const [base, count] of counts) {
+					const chapter = volume.chapters.find((c) => c.fileName.replace(/\.md$/, '') === base);
+					if (chapter) {
+						this.versionCounts.set(chapterRelPath(chapter), count);
+					}
+				}
+			})
+		);
+		return volumes;
 	}
 
 	/** 供 TreeView.reveal 定位章节：章节节点的父节点是所属卷。 */
@@ -33,13 +78,17 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 			return undefined;
 		}
 		const volumes = await this.library.listVolumes(book);
+		const chapter = 'seq' in element ? element : element.chapter;
 		return volumes.find((v) =>
-			v.chapters.some((c) => c.fileName === element.fileName && (c.volumeDir ?? '') === (element.volumeDir ?? ''))
+			v.chapters.some((c) => c.fileName === chapter.fileName && (c.volumeDir ?? '') === (chapter.volumeDir ?? ''))
 		);
 	}
 
 	getTreeItem(node: ChapterNode): vscode.TreeItem {
-		return 'chapters' in node ? this.volumeItem(node) : this.chapterItem(node);
+		if ('chapters' in node) {
+			return this.volumeItem(node);
+		}
+		return 'seq' in node ? this.chapterItem(node) : this.versionItem(node);
 	}
 
 	private volumeItem(volume: ChapterVolume): vscode.TreeItem {
@@ -55,7 +104,11 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 
 	private chapterItem(chapter: ChapterFile): vscode.TreeItem {
 		const book = this.library.getCurrentBook();
-		const item = new vscode.TreeItem(chapter.title, vscode.TreeItemCollapsibleState.None);
+		const versionCount = this.versionCounts.get(chapterRelPath(chapter)) ?? 0;
+		const item = new vscode.TreeItem(
+			chapter.title,
+			versionCount > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None
+		);
 		item.id = book
 			? `${book.dir}/${CHAPTERS_DIR}/${chapter.volumeDir ? chapter.volumeDir + '/' : ''}${chapter.fileName}`
 			: undefined;
@@ -67,10 +120,34 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 			if (progress && (progress === chapter.fileName || progress === chapterRelPath(chapter))) {
 				item.description = '●';
 			}
+			if (versionCount > 0) {
+				item.description = [item.description, vscode.l10n.t('{0} versions', versionCount)]
+					.filter(Boolean)
+					.join(' · ');
+			}
 			item.command = {
 				command: 'xReader.openChapter',
 				title: vscode.l10n.t('Open'),
 				arguments: [book.dir, chapter.volumeDir, chapter.fileName],
+			};
+		}
+		return item;
+	}
+
+	private versionItem(node: ChapterVersionNode): vscode.TreeItem {
+		const book = this.library.getCurrentBook();
+		const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.None);
+		item.id = book
+			? `${book.dir}/${VERSIONS_DIR}/${node.chapter.volumeDir ? node.chapter.volumeDir + '/' : ''}${node.chapter.fileName.replace(/\.md$/, '')}/${node.fileName}`
+			: undefined;
+		item.iconPath = this.versionIcon;
+		item.contextValue = 'chapterVersion';
+		item.tooltip = vscode.l10n.t('Version of chapter “{0}”', node.chapter.title);
+		if (book) {
+			item.command = {
+				command: 'xReader.openChapterVersion',
+				title: vscode.l10n.t('Open'),
+				arguments: [node],
 			};
 		}
 		return item;

@@ -98,15 +98,15 @@ suite('markdown helpers', () => {
 	});
 
 	test('parseBookMetadata 解析 frontmatter 字段与正文小节', () => {
-		const text = buildMetadataMarkdown('雨夜', '雨夜.txt');
+		const text = buildMetadataMarkdown('雨夜');
 		const meta = parseBookMetadata(text);
 		assert.deepStrictEqual(
 			meta.fields.map((f) => f.key),
-			['title', 'author', 'created', 'source']
+			['title', 'author', 'created']
 		);
 		assert.deepStrictEqual(
 			meta.fields.map((f) => f.value),
-			['雨夜', '', meta.fields[2].value, '雨夜.txt']
+			['雨夜', '', meta.fields[2].value]
 		);
 		assert.match(meta.fields[2].value, /^\d{4}-\d{2}-\d{2}$/);
 		// 行号指向字段/小节标题本身所在行（0 起）
@@ -376,7 +376,7 @@ suite('createBookFromText', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const text = '第一章 起\n内容一\n\n第二章 承\n内容二';
-			const first = await createBookFromText(root, '测试书', '测试书.txt', text);
+			const first = await createBookFromText(root, '测试书', text);
 			assert.strictEqual(first.book.name, '测试书');
 			assert.strictEqual(first.chapterCount, 2);
 
@@ -395,7 +395,7 @@ suite('createBookFromText', () => {
 			assert.ok(ch1.includes('内容一'));
 			assert.ok(ch1.includes('[下一章 →](<0002-第二章 承.md>)'));
 
-			const second = await createBookFromText(root, '测试书', '测试书.txt', text);
+			const second = await createBookFromText(root, '测试书', text);
 			assert.strictEqual(second.book.name, '测试书-2');
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
@@ -411,7 +411,7 @@ suite('createBookFromText', () => {
 				'# 第二卷',
 				'## 第1章 乙', '正文乙',
 			].join('\n');
-			const result = await createBookFromText(root, '卷书', '卷书.txt', text);
+			const result = await createBookFromText(root, '卷书', text);
 			const chaptersDir = path.join(result.book.dir, CHAPTERS_DIR);
 			assert.deepStrictEqual((await fs.readdir(chaptersDir)).sort(), ['第一卷', '第二卷']);
 			const vol1 = await fs.readdir(path.join(chaptersDir, '第一卷'));
@@ -430,7 +430,7 @@ suite('createBookFromText', () => {
 	test('未解析出章节时整书作为单章导入', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
-			const result = await createBookFromText(root, '无章节', '无章节.txt', '没有标题的正文');
+			const result = await createBookFromText(root, '无章节', '没有标题的正文');
 			assert.strictEqual(result.chapterCount, 1);
 			const files = await fs.readdir(path.join(result.book.dir, CHAPTERS_DIR));
 			assert.deepStrictEqual(files, ['0001-全文.md']);
@@ -533,7 +533,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '书', THREE_CHAPTER_TEXT);
 			const chapters = await service.listChapters(book);
 			const mid = chapters[1];
 			await service.ensureChapterSummary(book, mid);
@@ -573,7 +573,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '书', THREE_CHAPTER_TEXT);
 			const [first, second, third] = await service.listChapters(book);
 			await service.ensureChapterSummary(book, third);
 			await service.setProgress(book.dir, chapterRelPath(third));
@@ -625,7 +625,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '书', THREE_CHAPTER_TEXT);
 			const chapters = await service.listChapters(book);
 			// 手工腾出空档：把第 2 章改名到 0005（跳过 0002）
 			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
@@ -648,7 +648,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '书', THREE_CHAPTER_TEXT);
 			const chapters = await service.listChapters(book);
 			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
 			const mid = chapters[1];
@@ -676,7 +676,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '书', THREE_CHAPTER_TEXT);
 			const [first, second, third] = await service.listChapters(book);
 			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
 			const firstSummary = await service.ensureChapterSummary(book, first);
@@ -727,7 +727,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '书', THREE_CHAPTER_TEXT);
 			const chapters = await service.listChapters(book);
 			const mid = chapters[1];
 			await service.ensureChapterSummary(book, mid);
@@ -764,7 +764,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '书', THREE_CHAPTER_TEXT);
 			const chapters = await service.listChapters(book);
 			const mid = chapters[1];
 			await service.ensureChapterSummary(book, mid);
@@ -793,7 +793,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', TWO_VOLUME_TEXT);
+			const { book } = await createBookFromText(root, '书', TWO_VOLUME_TEXT);
 			const chapters = await service.listChapters(book);
 			const first = chapters[0];
 			const second = chapters[1];
@@ -830,7 +830,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', TWO_VOLUME_TEXT);
+			const { book } = await createBookFromText(root, '书', TWO_VOLUME_TEXT);
 			const chapters = await service.listChapters(book);
 			const first = chapters[0];
 			await service.ensureChapterSummary(book, first);
@@ -860,7 +860,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '书', '书.txt', TWO_VOLUME_TEXT);
+			const { book } = await createBookFromText(root, '书', TWO_VOLUME_TEXT);
 			const chapters = await service.listChapters(book);
 			await service.setProgress(book.dir, chapterRelPath(chapters[0]));
 
@@ -879,7 +879,7 @@ suite('LibraryService 写操作', () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
-			const { book } = await createBookFromText(root, '旧书', '旧书.txt', THREE_CHAPTER_TEXT);
+			const { book } = await createBookFromText(root, '旧书', THREE_CHAPTER_TEXT);
 			const chapters = await service.listChapters(book);
 			await service.setCurrentBook(book.dir);
 			await service.setProgress(book.dir, chapterRelPath(chapters[0]));

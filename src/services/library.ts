@@ -2,7 +2,7 @@ import type { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, IntervalSummary, NoteCategory, NoteFile, SummaryState } from '../model/book';
+import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, IntervalSummary, NoteCategory, NoteFile, Shelf, SummaryState } from '../model/book';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -12,6 +12,7 @@ import {
 	META_FILE,
 	NOTES_DIR,
 	uniqueBookName,
+	VERSIONS_DIR,
 	WORLD_DIR,
 } from './bookFactory';
 import { commitAll } from './git';
@@ -45,14 +46,24 @@ export {
 	INTERVAL_SUMMARIES_DIR,
 	META_FILE,
 	NOTES_DIR,
+	VERSIONS_DIR,
 	WORLD_DIR
 };
 
 /** 区间摘要的章节数：每 10 章一个区间。 */
 export const INTERVAL_SUMMARY_SIZE = 10;
 
+/** 子书架清单文件（库根下），记录自定义子书架与其收录的书链接。 */
+export const SHELVES_FILE = '书架.json';
+
+/** 默认子书架名：不出现在 书架.json 中，始终收录全部书。 */
+export const DEFAULT_SHELF_NAME = '默认';
+
+/** 切换主版本时原主版本在版本库中的默认存档名。 */
+export const PRIMARY_KEEP_VERSION_NAME = '原版';
+
 /** 新建空书时创建的目录骨架（不含 章节/；放 .gitkeep 以便 git 跟踪）。 */
-const EMPTY_SUBDIRS = [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR];
+const EMPTY_SUBDIRS = [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR, VERSIONS_DIR];
 
 /** 章节在 章节/ 下的相对路径（分卷含目录名），用作进度键。 */
 export function chapterRelPath(chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): string {
@@ -187,6 +198,14 @@ export class LibraryService {
 		} catch {
 			// 无摘要镜像时忽略
 		}
+		try {
+			await vscode.workspace.fs.rename(
+				vscode.Uri.file(this.versionsDirPath(book, from)),
+				vscode.Uri.file(this.versionsDirPath(book, to))
+			);
+		} catch {
+			// 无版本目录时忽略
+		}
 	}
 
 	/** 返回已配置的库目录；未配置（或 force 时）弹窗让用户选择并写入全局配置。 */
@@ -240,6 +259,140 @@ export class LibraryService {
 			}
 		}
 		return books.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** 读取 书架.json（缺失或损坏时按空处理）。 */
+	private async readShelves(): Promise<Shelf[]> {
+		if (!this.getLibraryPath()) {
+			return [];
+		}
+		try {
+			const parsed: unknown = JSON.parse(await fs.readFile(path.join(this.getLibraryPath(), SHELVES_FILE), 'utf8'));
+			if (!Array.isArray(parsed)) {
+				return [];
+			}
+			const shelves: Shelf[] = [];
+			for (const item of parsed) {
+				if (
+					item &&
+					typeof item === 'object' &&
+					typeof (item as Shelf).name === 'string' &&
+					(item as Shelf).name.trim() &&
+					Array.isArray((item as Shelf).books) &&
+					(item as Shelf).books.every((b) => typeof b === 'string')
+				) {
+					shelves.push({ name: (item as Shelf).name.trim(), books: [...(item as Shelf).books] });
+				}
+			}
+			return shelves;
+		} catch {
+			return [];
+		}
+	}
+
+	/** 写入 书架.json（不提交快照，由调用方统一 commit）。 */
+	private async saveShelves(shelves: Shelf[]): Promise<void> {
+		const root = this.getLibraryPath();
+		if (!root) {
+			return;
+		}
+		if (shelves.length === 0) {
+			await fs.rm(path.join(root, SHELVES_FILE), { force: true });
+			return;
+		}
+		await fs.writeFile(path.join(root, SHELVES_FILE), JSON.stringify(shelves, null, '\t'), 'utf8');
+	}
+
+	/** 自定义子书架列表（不含默认子书架）。 */
+	async listShelves(): Promise<Shelf[]> {
+		return this.readShelves();
+	}
+
+	/** 校验子书架名并返回；与默认名或已有子书架重名时抛错。 */
+	private async validateShelfName(name: string, except?: string): Promise<string> {
+		const target = name.trim();
+		if (!target) {
+			throw new Error('子书架名不能为空');
+		}
+		if (target === DEFAULT_SHELF_NAME || (await this.readShelves()).some((s) => s.name === target && s.name !== except)) {
+			throw new Error(`子书架「${target}」已存在`);
+		}
+		return target;
+	}
+
+	async createShelf(name: string): Promise<void> {
+		const target = await this.validateShelfName(name);
+		const shelves = await this.readShelves();
+		shelves.push({ name: target, books: [] });
+		await this.saveShelves(shelves);
+		await this.commitAndRefresh(`新建子书架「${target}」`);
+	}
+
+	async renameShelf(oldName: string, newName: string): Promise<void> {
+		const target = await this.validateShelfName(newName, oldName);
+		const shelves = await this.readShelves();
+		const shelf = shelves.find((s) => s.name === oldName);
+		if (!shelf) {
+			throw new Error(`子书架「${oldName}」不存在`);
+		}
+		shelf.name = target;
+		await this.saveShelves(shelves);
+		await this.commitAndRefresh(`重命名子书架「${oldName}」→「${target}」`);
+	}
+
+	async deleteShelf(name: string): Promise<void> {
+		const shelves = (await this.readShelves()).filter((s) => s.name !== name);
+		await this.saveShelves(shelves);
+		await this.commitAndRefresh(`删除子书架「${name}」`);
+	}
+
+	async addBookToShelf(shelfName: string, bookName: string): Promise<void> {
+		const shelves = await this.readShelves();
+		const shelf = shelves.find((s) => s.name === shelfName);
+		if (!shelf) {
+			throw new Error(`子书架「${shelfName}」不存在`);
+		}
+		if (!shelf.books.includes(bookName)) {
+			shelf.books.push(bookName);
+			await this.saveShelves(shelves);
+			await this.commitAndRefresh(`添加《${bookName}》到子书架「${shelfName}」`);
+		}
+	}
+
+	async removeBookFromShelf(shelfName: string, bookName: string): Promise<void> {
+		const shelves = await this.readShelves();
+		const shelf = shelves.find((s) => s.name === shelfName);
+		if (!shelf) {
+			return;
+		}
+		const filtered = shelf.books.filter((b) => b !== bookName);
+		if (filtered.length !== shelf.books.length) {
+			shelf.books = filtered;
+			await this.saveShelves(shelves);
+			await this.commitAndRefresh(`从子书架「${shelfName}」移除《${bookName}》`);
+		}
+	}
+
+	/** 书改名/删除时同步所有子书架里的书链接（newName 为 undefined 表示删除）。 */
+	private async updateShelfBookRefs(oldName: string, newName?: string): Promise<boolean> {
+		const shelves = await this.readShelves();
+		let changed = false;
+		for (const shelf of shelves) {
+			const index = shelf.books.indexOf(oldName);
+			if (index < 0) {
+				continue;
+			}
+			if (newName && !shelf.books.includes(newName)) {
+				shelf.books[index] = newName;
+			} else {
+				shelf.books.splice(index, 1);
+			}
+			changed = true;
+		}
+		if (changed) {
+			await this.saveShelves(shelves);
+		}
+		return changed;
 	}
 
 	/** 章节分卷列表（按卷序排序）：根目录章节归入默认卷 第一卷。 */
@@ -357,6 +510,151 @@ export class LibraryService {
 		);
 	}
 
+	/** 章节的版本目录（版本/<分卷>/<章节文件名去 .md>），目录按需创建。 */
+	private versionsDirPath(book: BookInfo, chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): string {
+		return path.join(book.dir, VERSIONS_DIR, chapter.volumeDir ?? '', chapter.fileName.replace(/\.md$/, ''));
+	}
+
+	/** 章节某个版本文件的绝对路径。 */
+	chapterVersionPath(
+		book: BookInfo,
+		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		versionName: string
+	): string {
+		return path.join(this.versionsDirPath(book, chapter), `${versionName}.md`);
+	}
+
+	/** 目录内生成不冲突的文件基名（重名自动加 -2、-3…）。 */
+	private async uniqueFileName(dir: string, base: string): Promise<string> {
+		let name = base;
+		for (let suffix = 2; ; suffix++) {
+			if (!(await pathExists(path.join(dir, `${name}.md`)))) {
+				return name;
+			}
+			name = `${base}-${suffix}`;
+		}
+	}
+
+	/** 某分卷下有备选版本的章节（章节文件名基名 → 版本数），用于章节目录视图。 */
+	async listVolumeVersionCounts(book: BookInfo, volumeDir?: string): Promise<Map<string, number>> {
+		let entries: Dirent[];
+		try {
+			entries = await fs.readdir(path.join(book.dir, VERSIONS_DIR, volumeDir ?? ''), { withFileTypes: true });
+		} catch {
+			return new Map();
+		}
+		const counts = new Map<string, number>();
+		for (const entry of entries) {
+			if (!entry.isDirectory()) {
+				continue;
+			}
+			try {
+				const files = await fs.readdir(path.join(book.dir, VERSIONS_DIR, volumeDir ?? '', entry.name));
+				const count = files.filter((f) => f.endsWith('.md')).length;
+				if (count > 0) {
+					counts.set(entry.name, count);
+				}
+			} catch {
+				// 目录读失败按无版本处理
+			}
+		}
+		return counts;
+	}
+
+	/** 章节的备选版本列表（版本名 = 文件名去 .md），按名称排序。 */
+	async listChapterVersions(book: BookInfo, chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): Promise<EntryFile[]> {
+		let files: string[];
+		try {
+			files = await fs.readdir(this.versionsDirPath(book, chapter));
+		} catch {
+			return [];
+		}
+		return files
+			.filter((fileName) => fileName.endsWith('.md'))
+			.map((fileName) => ({ name: fileName.replace(/\.md$/, ''), fileName }))
+			.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** 以主版本当前内容创建备选版本（name 省略时自动命名，重名加序号），返回版本文件路径。 */
+	async createChapterVersion(
+		book: BookInfo,
+		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		name?: string
+	): Promise<string> {
+		const dir = this.versionsDirPath(book, chapter);
+		const count = (await this.listChapterVersions(book, chapter)).length;
+		const base = await this.uniqueFileName(dir, sanitizeFileTitle(name?.trim() || `版本${count + 1}`));
+		const content = await fs.readFile(this.chapterPath(book, chapter.fileName, chapter.volumeDir), 'utf8');
+		await fs.mkdir(dir, { recursive: true });
+		const filePath = path.join(dir, `${base}.md`);
+		await fs.writeFile(filePath, content, 'utf8');
+		await this.commitAndRefresh(`新建章节版本 ${chapterRelPath(chapter)} · ${base}`);
+		return filePath;
+	}
+
+	/** 把备选版本设为主版本：原主版本存回版本库（默认名 原版），版本内容原地写入主文件（路径不变）。 */
+	async promoteChapterVersion(
+		book: BookInfo,
+		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		versionName: string,
+		keepOldName?: string
+	): Promise<void> {
+		const dir = this.versionsDirPath(book, chapter);
+		// 版本名带 .md 后缀时容错去掉
+		const base = sanitizeFileTitle(versionName.replace(/\.md$/, ''));
+		const versionFile = path.join(dir, `${base}.md`);
+		if (!(await pathExists(versionFile))) {
+			throw new Error(`版本「${versionName}」不存在`);
+		}
+		const mainPath = this.chapterPath(book, chapter.fileName, chapter.volumeDir);
+		const [mainMd, versionMd] = await Promise.all([
+			fs.readFile(mainPath, 'utf8'),
+			fs.readFile(versionFile, 'utf8'),
+		]);
+		const keepBase = await this.uniqueFileName(dir, sanitizeFileTitle(keepOldName?.trim() || PRIMARY_KEEP_VERSION_NAME));
+		await fs.writeFile(path.join(dir, `${keepBase}.md`), mainMd, 'utf8');
+		await fs.writeFile(mainPath, versionMd, 'utf8');
+		await fs.rm(versionFile, { force: true });
+		await closeFileTabs(versionFile);
+		await this.commitAndRefresh(`「${chapter.fileName}」版本「${versionName}」设为主版本（原版存为「${keepBase}」）`);
+	}
+
+	/** 重命名章节的备选版本，返回新版本名。 */
+	async renameChapterVersion(
+		book: BookInfo,
+		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		oldName: string,
+		newName: string
+	): Promise<string> {
+		const target = sanitizeFileTitle(newName);
+		if (target === oldName) {
+			return oldName;
+		}
+		const oldPath = this.chapterVersionPath(book, chapter, oldName);
+		const newPath = this.chapterVersionPath(book, chapter, target);
+		if (!(await pathExists(oldPath))) {
+			throw new Error(`版本「${oldName}」不存在`);
+		}
+		if (await pathExists(newPath)) {
+			throw new Error(`版本「${target}」已存在`);
+		}
+		await vscode.workspace.fs.rename(vscode.Uri.file(oldPath), vscode.Uri.file(newPath));
+		await this.commitAndRefresh(`重命名章节版本 ${chapterRelPath(chapter)} · ${oldName} → ${target}`);
+		return target;
+	}
+
+	/** 删除章节的备选版本（不动主版本）。 */
+	async deleteChapterVersion(
+		book: BookInfo,
+		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		versionName: string
+	): Promise<void> {
+		const filePath = this.chapterVersionPath(book, chapter, versionName);
+		await fs.rm(filePath, { force: true });
+		await closeFileTabs(filePath);
+		await this.commitAndRefresh(`删除章节版本 ${chapterRelPath(chapter)} · ${versionName}`);
+	}
+
 	/** 世界书/角色卡 目录下的条目 md 文件列表（忽略 .gitkeep 等非 md 文件）。 */
 	async listEntries(book: BookInfo, subDir: string): Promise<EntryFile[]> {
 		let entries: string[];
@@ -387,7 +685,7 @@ export class LibraryService {
 			return filePath;
 		}
 		try {
-			await fs.writeFile(filePath, buildMetadataMarkdown(book.name, ''), 'utf8');
+			await fs.writeFile(filePath, buildMetadataMarkdown(book.name), 'utf8');
 		} catch {
 			return undefined;
 		}
@@ -408,7 +706,7 @@ export class LibraryService {
 			await fs.mkdir(path.join(dir, sub), { recursive: true });
 			await fs.writeFile(path.join(dir, sub, '.gitkeep'), '');
 		}
-		await fs.writeFile(path.join(dir, META_FILE), buildMetadataMarkdown(dirName, ''), 'utf8');
+		await fs.writeFile(path.join(dir, META_FILE), buildMetadataMarkdown(dirName), 'utf8');
 		await commitAll(root, `新建《${dirName}》`);
 		await this.setCurrentBook(dir);
 		this._onDidChange.fire();
@@ -423,9 +721,8 @@ export class LibraryService {
 		}
 		const data = await fs.readFile(fileUri.fsPath);
 		const text = decodeBuffer(data);
-		const sourceFileName = path.basename(fileUri.fsPath);
-		const rawName = sourceFileName.replace(/\.[^.]+$/, '');
-		const result = await createBookFromText(root, rawName, sourceFileName, text);
+		const rawName = path.basename(fileUri.fsPath).replace(/\.[^.]+$/, '');
+		const result = await createBookFromText(root, rawName, text);
 		await commitAll(root, `导入《${result.book.name}》（${result.chapterCount}章）`);
 		await this.setCurrentBook(result.book.dir);
 		this._onDidChange.fire();
@@ -434,6 +731,7 @@ export class LibraryService {
 
 	async removeBook(book: BookInfo): Promise<void> {
 		await fs.rm(book.dir, { recursive: true, force: true });
+		await this.updateShelfBookRefs(book.name);
 		await this.commit(`移除《${book.name}》`);
 		if (this.getCurrentBook()?.dir === book.dir) {
 			await this.setCurrentBook(undefined);
@@ -490,6 +788,7 @@ export class LibraryService {
 		const summaryFile = this.summaryPath(book, chapter.fileName, chapter.volumeDir);
 		await fs.rm(chapterFile, { force: true });
 		await fs.rm(summaryFile, { force: true });
+		await fs.rm(this.versionsDirPath(book, chapter), { recursive: true, force: true });
 		await closeFileTabs(summaryFile);
 		// 进度指向被删章时迁移到相邻章（prev 优先），无相邻章则清除
 		const rel = chapterRelPath(chapter);
@@ -724,6 +1023,7 @@ export class LibraryService {
 			delete progress[book.dir];
 			await this.context.globalState.update(PROGRESS_KEY, progress);
 		}
+		await this.updateShelfBookRefs(book.name, target);
 		await this.commitAndRefresh(`重命名书籍《${book.name}》→《${target}》`);
 		return { name: target, dir: newDir };
 	}
@@ -1224,7 +1524,8 @@ export class LibraryService {
 			this.watcher = undefined;
 			return;
 		}
-		this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.md'));
+		// 书架.json 在库根，外部改动也要触发刷新，一并纳入监听
+		this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{md,json}'));
 		const onEvent = (uri: vscode.Uri): void => {
 			this.chapterTitleCache.delete(uri.fsPath);
 			if (this.isChapterFile(uri.fsPath)) {

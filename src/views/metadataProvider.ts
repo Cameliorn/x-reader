@@ -7,7 +7,6 @@ const FIELD_LABELS: Record<string, () => string> = {
     title: () => vscode.l10n.t('Title'),
     author: () => vscode.l10n.t('Author'),
     created: () => vscode.l10n.t('Created'),
-    source: () => vscode.l10n.t('Source file'),
 };
 
 /** 元数据项：frontmatter 字段或正文小节，点击跳到 元数据.md 对应行。 */

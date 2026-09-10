@@ -11,12 +11,13 @@ import {
 	closeFileTabs,
 	INTERVAL_SUMMARIES_DIR,
 	LibraryService,
+	PRIMARY_KEEP_VERSION_NAME,
 	WORLD_DIR,
 } from './services/library';
 import { parseChapterFileName } from './services/markdown';
 import { registerAgentTools } from './tools';
-import { BookshelfProvider } from './views/bookshelfProvider';
-import { ChapterProvider } from './views/chapterProvider';
+import { BookshelfProvider, type BookshelfItem } from './views/bookshelfProvider';
+import { ChapterProvider, type ChapterVersionNode } from './views/chapterProvider';
 import { EntryProvider } from './views/entryProvider';
 import { MetadataProvider } from './views/metadataProvider';
 import { NoteProvider } from './views/noteProvider';
@@ -27,9 +28,14 @@ export function activate(context: vscode.ExtensionContext): void {
 	// 视图图标同时用作各视图的树节点图标（默认活动栏分区布局不显示视图图标）
 	const viewIcon = (name: string): vscode.Uri =>
 		vscode.Uri.joinPath(context.extensionUri, 'resources', 'icons', name);
-	const bookshelfProvider = new BookshelfProvider(library, viewIcon('bookshelf.svg'));
+	const bookshelfProvider = new BookshelfProvider(library, viewIcon('book.svg'), viewIcon('bookshelf.svg'));
 	const metadataProvider = new MetadataProvider(library, viewIcon('metadata.svg'));
-	const chapterProvider = new ChapterProvider(library, viewIcon('volume.svg'), viewIcon('chapter.svg'));
+	const chapterProvider = new ChapterProvider(
+		library,
+		viewIcon('volume.svg'),
+		viewIcon('chapter.svg'),
+		viewIcon('version.svg')
+	);
 	const worldProvider = new EntryProvider(library, WORLD_DIR, viewIcon('worldbook.svg'));
 	const cardsProvider = new EntryProvider(library, CARDS_DIR, viewIcon('characters.svg'));
 	const summaryProvider = new SummaryProvider(
@@ -44,11 +50,11 @@ export function activate(context: vscode.ExtensionContext): void {
 	const bookshelfView = vscode.window.createTreeView('xReader.bookshelf', {
 		treeDataProvider: bookshelfProvider,
 	});
-	// 书架选中即当前书：agent 工具（省略 book 参数）跟随书架选中
+	// 书架选中即当前书：agent 工具（省略 book 参数）跟随书架选中；子书架节点不参与选中
 	bookshelfView.onDidChangeSelection(
 		(e) => {
 			const book = e.selection[0];
-			if (book) {
+			if (book && book.kind === 'book') {
 				void library.setCurrentBook(book.dir);
 			}
 		},
@@ -545,6 +551,105 @@ export function activate(context: vscode.ExtensionContext): void {
 				await library.removeBook(book);
 			}
 		}),
+		vscode.commands.registerCommand('xReader.newShelf', async () => {
+			const name = await promptName(vscode.l10n.t('New Sub-shelf'), vscode.l10n.t('Sub-shelf name'));
+			if (!name) {
+				return;
+			}
+			try {
+				await library.createShelf(name);
+			} catch (error) {
+				void vscode.window.showErrorMessage(
+					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
+				);
+			}
+		}),
+		vscode.commands.registerCommand('xReader.renameShelf', async (node?: BookshelfItem) => {
+			if (!node || node.kind !== 'shelf' || node.isDefault) {
+				return;
+			}
+			await renameWithInput(
+				vscode.l10n.t('Rename Sub-shelf'),
+				node.name,
+				(name) => library.renameShelf(node.name, name),
+				vscode.l10n.t('Sub-shelf name')
+			);
+		}),
+		vscode.commands.registerCommand('xReader.deleteShelf', async (node?: BookshelfItem) => {
+			if (!node || node.kind !== 'shelf' || node.isDefault) {
+				return;
+			}
+			if (await confirmDelete(vscode.l10n.t('Delete sub-shelf “{0}”? (Books will not be deleted)', node.name))) {
+				await library.deleteShelf(node.name);
+			}
+		}),
+		vscode.commands.registerCommand('xReader.addBookToShelf', async (book?: BookInfo) => {
+			const target = book ?? library.getCurrentBook();
+			if (!target) {
+				return;
+			}
+			const shelves = await library.listShelves();
+			const pick = await vscode.window.showQuickPick(
+				[
+					...shelves
+						.filter((s) => !s.books.includes(target.name))
+						.map((s) => ({ label: s.name, shelfName: s.name as string | undefined })),
+					{ label: vscode.l10n.t('New Sub-shelf…'), shelfName: undefined },
+				],
+				{
+					title: vscode.l10n.t('Add to Sub-shelf'),
+					placeHolder: vscode.l10n.t('Choose a sub-shelf for “{0}”', target.name),
+				}
+			);
+			if (!pick) {
+				return;
+			}
+			if (pick.shelfName) {
+				await library.addBookToShelf(pick.shelfName, target.name);
+				return;
+			}
+			const name = await promptName(vscode.l10n.t('New Sub-shelf'), vscode.l10n.t('Sub-shelf name'));
+			if (!name) {
+				return;
+			}
+			try {
+				await library.createShelf(name);
+				await library.addBookToShelf(name, target.name);
+			} catch (error) {
+				void vscode.window.showErrorMessage(
+					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
+				);
+			}
+		}),
+		vscode.commands.registerCommand('xReader.addShelfBook', async (node?: BookshelfItem) => {
+			if (!node || node.kind !== 'shelf' || node.isDefault) {
+				return;
+			}
+			const shelf = (await library.listShelves()).find((s) => s.name === node.name);
+			const books = (await library.listBooks()).filter((b) => !shelf?.books.includes(b.name));
+			if (books.length === 0) {
+				void vscode.window.showInformationMessage(vscode.l10n.t('All books are already in this sub-shelf'));
+				return;
+			}
+			const pick = await vscode.window.showQuickPick(
+				books.map((b) => ({ label: b.name, book: b })),
+				{
+					title: vscode.l10n.t('Add Book to Sub-shelf'),
+					placeHolder: vscode.l10n.t('Choose a book to add'),
+				}
+			);
+			if (pick) {
+				await library.addBookToShelf(node.name, pick.book.name);
+			}
+		}),
+		vscode.commands.registerCommand('xReader.removeBookFromShelf', async (node?: BookshelfItem) => {
+			if (!node || node.kind !== 'book' || node.isDefaultShelf) {
+				return;
+			}
+			if (await confirmDelete(vscode.l10n.t('Remove “{0}” from sub-shelf “{1}”?', node.name, node.shelfName))) {
+				await library.removeBookFromShelf(node.shelfName, node.name);
+			}
+		}),
 		vscode.commands.registerCommand('xReader.newCharacterCard', (book?: BookInfo) =>
 			createEntry(book, CARDS_DIR, vscode.l10n.t('Character Card'))
 		),
@@ -559,6 +664,77 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			if (await confirmDelete(vscode.l10n.t('Delete chapter “{0}”?', chapter.title))) {
 				await library.removeChapter(book, chapter);
+			}
+		}),
+		vscode.commands.registerCommand('xReader.newChapterVersion', async (chapter?: ChapterFile) => {
+			const book = library.getCurrentBook();
+			if (!book || !chapter) {
+				return;
+			}
+			const versions = await library.listChapterVersions(book, chapter);
+			const name = await promptName(
+				vscode.l10n.t('New Version'),
+				vscode.l10n.t('Version name'),
+				vscode.l10n.t('Version {0}', versions.length + 1)
+			);
+			if (!name) {
+				return;
+			}
+			try {
+				const filePath = await library.createChapterVersion(book, chapter, name);
+				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+			} catch (error) {
+				void vscode.window.showErrorMessage(
+					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
+				);
+			}
+		}),
+		vscode.commands.registerCommand('xReader.openChapterVersion', async (node?: ChapterVersionNode) => {
+			const book = library.getCurrentBook();
+			if (!book || !node) {
+				return;
+			}
+			await vscode.window.showTextDocument(
+				vscode.Uri.file(library.chapterVersionPath(book, node.chapter, node.name))
+			);
+		}),
+		vscode.commands.registerCommand('xReader.setPrimaryChapterVersion', async (node?: ChapterVersionNode) => {
+			const book = library.getCurrentBook();
+			if (!book || !node) {
+				return;
+			}
+			const message = vscode.l10n.t(
+				'Set “{0}” as the primary version of chapter “{1}”? The current primary version will be kept as version “{2}”.',
+				node.name,
+				node.chapter.title,
+				PRIMARY_KEEP_VERSION_NAME
+			);
+			const answer = await vscode.window.showInformationMessage(message, { modal: true }, vscode.l10n.t('Switch'));
+			if (answer !== vscode.l10n.t('Switch')) {
+				return;
+			}
+			await library.promoteChapterVersion(book, node.chapter, node.name);
+			await openChapter(book.dir, node.chapter.volumeDir, node.chapter.fileName, node.chapter);
+		}),
+		vscode.commands.registerCommand('xReader.renameChapterVersion', async (node?: ChapterVersionNode) => {
+			const book = library.getCurrentBook();
+			if (!book || !node) {
+				return;
+			}
+			await renameWithInput(
+				vscode.l10n.t('Rename Version'),
+				node.name,
+				(name) => library.renameChapterVersion(book, node.chapter, node.name, name),
+				vscode.l10n.t('Version name')
+			);
+		}),
+		vscode.commands.registerCommand('xReader.deleteChapterVersion', async (node?: ChapterVersionNode) => {
+			const book = library.getCurrentBook();
+			if (!book || !node) {
+				return;
+			}
+			if (await confirmDelete(vscode.l10n.t('Delete version “{0}” of chapter “{1}”?', node.name, node.chapter.title))) {
+				await library.deleteChapterVersion(book, node.chapter, node.name);
 			}
 		}),
 		vscode.commands.registerCommand('xReader.renameChapter', async (chapter?: ChapterFile) => {

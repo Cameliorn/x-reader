@@ -183,6 +183,42 @@
         "icon": "resources/icons/trash.svg"
       },
       {
+        "command": "xReader.newShelf",
+        "title": "%command.newShelf.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-shelf.svg"
+      },
+      {
+        "command": "xReader.renameShelf",
+        "title": "%command.renameShelf.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/pencil.svg"
+      },
+      {
+        "command": "xReader.deleteShelf",
+        "title": "%command.deleteShelf.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/trash.svg"
+      },
+      {
+        "command": "xReader.addBookToShelf",
+        "title": "%command.addBookToShelf.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-shelf.svg"
+      },
+      {
+        "command": "xReader.addShelfBook",
+        "title": "%command.addShelfBook.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/new-book.svg"
+      },
+      {
+        "command": "xReader.removeBookFromShelf",
+        "title": "%command.removeBookFromShelf.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/trash.svg"
+      },
+      {
         "command": "xReader.deleteEntry",
         "title": "%command.deleteEntry.title%",
         "category": "X Reader",
@@ -191,6 +227,35 @@
       {
         "command": "xReader.deleteChapter",
         "title": "%command.deleteChapter.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/trash.svg"
+      },
+      {
+        "command": "xReader.newChapterVersion",
+        "title": "%command.newChapterVersion.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-version.svg"
+      },
+      {
+        "command": "xReader.openChapterVersion",
+        "title": "%command.openChapterVersion.title%",
+        "category": "X Reader"
+      },
+      {
+        "command": "xReader.setPrimaryChapterVersion",
+        "title": "%command.setPrimaryChapterVersion.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/bookmark.svg"
+      },
+      {
+        "command": "xReader.renameChapterVersion",
+        "title": "%command.renameChapterVersion.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/pencil.svg"
+      },
+      {
+        "command": "xReader.deleteChapterVersion",
+        "title": "%command.deleteChapterVersion.title%",
         "category": "X Reader",
         "icon": "resources/icons/trash.svg"
       },
@@ -439,7 +504,7 @@
         "toolReferenceName": "listChapters",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/chapters.svg",
-        "modelDescription": "列出一本书的章节（相对路径、序号、标题、章节摘要状态）。可按分卷过滤。摘要状态标记：｜摘要✓ 表示摘要是最新的，｜摘要待维护 表示摘要写完之后该章又有改动（需要重读正文并更新摘要），无标记表示尚未创建摘要。返回的相对路径可直接作为 readChapterSummary / deleteChapter / renameChapter 等工具的 chapter 参数；章节正文直接用文件工具读取 章节/ 下的 md 文件即可，无需专用工具。",
+        "modelDescription": "列出一本书的章节（相对路径、序号、标题、章节摘要状态）。可按分卷过滤。摘要状态标记：｜摘要✓ 表示摘要是最新的，｜摘要待维护 表示摘要写完之后该章又有改动（需要重读正文并更新摘要），无标记表示尚未创建摘要。｜版本×N 表示该章有 N 个备选版本（用 listChapterVersions 查看、setPrimaryChapterVersion 切换主版本）。返回的相对路径可直接作为 readChapterSummary / deleteChapter / renameChapter 等工具的 chapter 参数；章节正文直接用文件工具读取 章节/ 下的 md 文件即可，无需专用工具。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -452,6 +517,120 @@
               "description": "只列出该分卷（卷名或目录名）的章节"
             }
           }
+        }
+      },
+      {
+        "name": "xReader_listChapterVersions",
+        "displayName": "%languageModelTools.listChapterVersions.displayName%",
+        "toolReferenceName": "listChapterVersions",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/version.svg",
+        "modelDescription": "列出某章的全部备选版本（版本/ 目录下按版本名存放的 md）。chapter 参数可用章节相对路径、文件名或标题。返回版本名列表与主版本路径；主版本才是阅读顺序中的正式章节，备选版本只是草稿或变体。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            }
+          },
+          "required": [
+            "chapter"
+          ]
+        }
+      },
+      {
+        "name": "xReader_createChapterVersion",
+        "displayName": "%languageModelTools.createChapterVersion.displayName%",
+        "toolReferenceName": "createChapterVersion",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/add-version.svg",
+        "modelDescription": "为某章创建一个备选版本：把当前主版本内容复制到 版本/ 目录下（name 为版本名，省略时自动命名；重名自动加序号），之后可用文件工具编辑该版本文件改写内容。备选版本不影响阅读顺序与章节摘要。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            },
+            "name": {
+              "type": "string",
+              "description": "版本名，如 重写A；省略时自动命名"
+            }
+          },
+          "required": [
+            "chapter"
+          ]
+        }
+      },
+      {
+        "name": "xReader_setPrimaryChapterVersion",
+        "displayName": "%languageModelTools.setPrimaryChapterVersion.displayName%",
+        "toolReferenceName": "setPrimaryChapterVersion",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/bookmark.svg",
+        "modelDescription": "把某章的一个备选版本切换为主版本：版本内容原地写入主章节文件（路径不变，导航、进度、笔记关联自动保持），原主版本内容自动存回版本库（默认版本名 原版，可用 keepOldName 指定）。章节摘要会因此转为待维护，需提醒用户或重新生成摘要。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            },
+            "version": {
+              "type": "string",
+              "description": "要设为主版本的版本名"
+            },
+            "keepOldName": {
+              "type": "string",
+              "description": "原主版本存回版本库时使用的版本名，省略时为 原版"
+            }
+          },
+          "required": [
+            "chapter",
+            "version"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteChapterVersion",
+        "displayName": "%languageModelTools.deleteChapterVersion.displayName%",
+        "toolReferenceName": "deleteChapterVersion",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/trash.svg",
+        "modelDescription": "删除某章的一个备选版本（不影响主版本与章节摘要）。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "chapter": {
+              "type": "string",
+              "description": "章节相对路径、文件名或标题"
+            },
+            "version": {
+              "type": "string",
+              "description": "要删除的版本名"
+            }
+          },
+          "required": [
+            "chapter",
+            "version"
+          ]
         }
       },
       {
@@ -1134,6 +1313,11 @@
           "group": "navigation@3"
         },
         {
+          "command": "xReader.newShelf",
+          "when": "view == xReader.bookshelf && !xReader.noLibrary",
+          "group": "shelf"
+        },
+        {
           "command": "xReader.resetHistory",
           "when": "view == xReader.bookshelf && !xReader.noLibrary",
           "group": "navigation@4"
@@ -1166,6 +1350,31 @@
       ],
       "view/item/context": [
         {
+          "command": "xReader.addBookToShelf",
+          "when": "view == xReader.bookshelf && viewItem == book",
+          "group": "0_shelf@1"
+        },
+        {
+          "command": "xReader.renameShelf",
+          "when": "view == xReader.bookshelf && viewItem == customShelf",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.addShelfBook",
+          "when": "view == xReader.bookshelf && viewItem == customShelf",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.deleteShelf",
+          "when": "view == xReader.bookshelf && viewItem == customShelf",
+          "group": "inline@3"
+        },
+        {
+          "command": "xReader.removeBookFromShelf",
+          "when": "view == xReader.bookshelf && viewItem == shelfBook",
+          "group": "inline@1"
+        },
+        {
           "command": "xReader.speakChapter",
           "when": "view == xReader.chapters && viewItem == chapter",
           "group": "0_read@1"
@@ -1189,6 +1398,26 @@
           "command": "xReader.moveChapter",
           "when": "view == xReader.chapters && viewItem == chapter",
           "group": "1_modify@1"
+        },
+        {
+          "command": "xReader.newChapterVersion",
+          "when": "view == xReader.chapters && viewItem == chapter",
+          "group": "0_version@1"
+        },
+        {
+          "command": "xReader.setPrimaryChapterVersion",
+          "when": "view == xReader.chapters && viewItem == chapterVersion",
+          "group": "0_version@1"
+        },
+        {
+          "command": "xReader.renameChapterVersion",
+          "when": "view == xReader.chapters && viewItem == chapterVersion",
+          "group": "inline@1"
+        },
+        {
+          "command": "xReader.deleteChapterVersion",
+          "when": "view == xReader.chapters && viewItem == chapterVersion",
+          "group": "inline@2"
         },
         {
           "command": "xReader.newChapter",
