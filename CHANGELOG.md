@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-10
+
 ### 新增
 
 - 朗读联动 x-audio：新增「朗读本章 / 分角色朗读本章 / 朗读选中文本」命令与章节页签、章节目录右键入口，经 `xaudio.speakText` 调用 [x-audio](https://marketplace.visualstudio.com/items?itemName=cameliorn.x-audio) 合成播放，长章节自动分块。
