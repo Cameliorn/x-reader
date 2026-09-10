@@ -1,0 +1,7 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16">
+    <rect width="16" height="16" fill="#fff"/>
+    <path d="M3.5 10.8 5.2 12.5M10.4 3.9l1.7 1.7" stroke="#000" stroke-width="1.1"/>
+  </mask>
+  <path mask="url(#cut)" fill="#6e6e6e" d="M12.6 1.8 2.4 13.6 14.2 3.4z"/>
+</svg>

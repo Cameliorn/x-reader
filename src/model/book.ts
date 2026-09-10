@@ -48,6 +48,9 @@ export interface EntryFile {
 	fileName: string;
 }
 
+/** 摘要维护状态：未创建 / 最新 / 待维护（摘要创建后章节又有改动）。 */
+export type SummaryState = 'missing' | 'ok' | 'stale';
+
 /** 区间摘要：每 10 章一个区间，摘要文件位于 区间摘要/ 下。 */
 export interface IntervalSummary {
 	/** 起始章节序号（含） */
@@ -58,8 +61,8 @@ export interface IntervalSummary {
 	fileName: string;
 	/** 区间内章节 */
 	chapters: ChapterFile[];
-	/** 摘要文件是否已存在 */
-	exists: boolean;
+	/** 摘要状态：区间内任一章节比摘要文件更新的即为待维护 */
+	state: SummaryState;
 }
 
 /** 笔记分类：笔记/ 下的子目录。 */

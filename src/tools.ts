@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, EntryFile } from './model/book';
+import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, SummaryState } from './model/book';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -9,10 +9,12 @@ import {
 	CHAPTERS_DIR,
 	INTERVAL_SUMMARIES_DIR,
 	LibraryService,
+	META_FILE,
 	NOTE_CHAPTER_FM_RE,
 	NOTES_DIR,
 	WORLD_DIR,
 } from './services/library';
+import type { BookMetadata } from './services/markdown';
 
 /** 工具返回文本结果。 */
 const text = (value: string): vscode.LanguageModelToolResult =>
@@ -40,11 +42,7 @@ async function resolveBook(library: LibraryService, name?: string): Promise<Book
 		const found = books.find((b) => b.name === name);
 		if (!found) {
 			throw new Error(
-				vscode.l10n.t(
-					'Book “{0}” not found. Existing: {1}',
-					name,
-					books.map((b) => b.name).join('、') || vscode.l10n.t('(empty)')
-				)
+				vscode.l10n.t('Book “{0}” not found. Existing: {1}', name, listOrEmpty(books.map((b) => b.name)))
 			);
 		}
 		return found;
@@ -88,6 +86,108 @@ async function findEntry(
 	const entries = await library.listEntries(book, subDir);
 	return entries.find((e) => e.name === ref || e.fileName === ref || e.fileName === `${ref}.md`);
 }
+
+/** 顿号连接名称列表；空列表回退到 (empty)。 */
+const listOrEmpty = (names: string[]): string => names.join('、') || vscode.l10n.t('(empty)');
+
+/** 顿号连接名称列表；空列表回退到 (none)。 */
+const listOrNone = (names: string[]): string => names.join('、') || vscode.l10n.t('(none)');
+
+/** 按引用取章节；找不到时抛错说明可用引用格式。 */
+async function requireChapter(library: LibraryService, book: BookInfo, ref: string): Promise<ChapterFile> {
+	const chapter = await findChapter(library, book, ref);
+	if (!chapter) {
+		throw new Error(
+			vscode.l10n.t(
+				'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
+				ref
+			)
+		);
+	}
+	return chapter;
+}
+
+/** 在已知分卷列表中按卷名/目录名取分卷；找不到时抛错列出现有分卷。 */
+function pickVolume(volumes: ChapterVolume[], ref: string): ChapterVolume {
+	const found = volumes.find((v) => v.name === ref || v.dirName === ref);
+	if (!found) {
+		throw new Error(
+			vscode.l10n.t('Volume “{0}” not found. Existing: {1}', ref, listOrNone(volumes.map((v) => v.name)))
+		);
+	}
+	return found;
+}
+
+/** 按引用取条目/角色卡；找不到时抛错（notFoundTemplate 为该类条目的 l10n 文案）。 */
+async function requireEntry(
+	library: LibraryService,
+	book: BookInfo,
+	subDir: string,
+	ref: string,
+	notFoundTemplate: string
+): Promise<EntryFile> {
+	const found = await findEntry(library, book, subDir, ref);
+	if (found) {
+		return found;
+	}
+	const existing = await library.listEntries(book, subDir);
+	throw new Error(vscode.l10n.t(notFoundTemplate, ref, listOrEmpty(existing.map((e) => e.name))));
+}
+
+/** 笔记所在子目录（未指定分类时为 笔记/ 根）；分类不存在时抛错。 */
+async function resolveNoteDir(library: LibraryService, book: BookInfo, category?: string): Promise<string> {
+	if (!category) {
+		return NOTES_DIR;
+	}
+	const categories = await library.listNoteCategories(book);
+	const found = categories.find((c) => c.dirName === category || c.name === category);
+	if (!found) {
+		throw new Error(
+			vscode.l10n.t('Note category “{0}” not found. Existing: {1}', category, listOrNone(categories.map((c) => c.name)))
+		);
+	}
+	return `${NOTES_DIR}/${found.dirName}`;
+}
+
+/** 按引用取笔记；找不到时抛错（category 仅用于错误提示）。 */
+async function requireNote(
+	library: LibraryService,
+	book: BookInfo,
+	subDir: string,
+	ref: string,
+	category?: string
+): Promise<EntryFile> {
+	const note = await findEntry(library, book, subDir, ref);
+	if (!note) {
+		throw new Error(
+			vscode.l10n.t('Note “{0}” not found{1}.', ref, category ? vscode.l10n.t(' (category: {0})', category) : '')
+		);
+	}
+	return note;
+}
+
+/** 章节行尾的摘要状态标记：待维护 / ✓ / 不标（未创建）。 */
+const summaryMark = (state: SummaryState | undefined): string =>
+	state === 'stale' ? '｜摘要待维护' : state === 'ok' ? '｜摘要✓' : '';
+
+/** 元数据文本行：frontmatter 字段 + 各二级小节（空小节注明），供工具直接带出，省得 agent 再读一遍文件。 */
+function metadataLines(meta: BookMetadata | undefined, filePath: string): string[] {
+	if (!meta || (meta.fields.length === 0 && meta.sections.length === 0)) {
+		return [`元数据：${filePath} 缺失或为空，可用文件工具补写。`];
+	}
+	const fields = meta.fields
+		.filter((field) => field.value.trim().length > 0)
+		.map((field) => `${field.key}=${field.value.trim()}`);
+	const lines = [`元数据（${filePath}）：${fields.join('｜') || '（无字段）'}`];
+	for (const section of meta.sections) {
+		lines.push(`## ${section.title}`);
+		lines.push(section.body.trim() || '（空）');
+	}
+	return lines;
+}
+
+/** 摘要已过期时的提示，附在返回内容前。 */
+const STALE_NOTICE = '⚠ 该摘要写入之后章节又有改动，内容可能已过期，请对照正文核对并按需重写。\n\n';
 
 interface BookInput {
 	book?: string;
@@ -163,16 +263,18 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						chapter = await library.findChapterByProgress(book, progress);
 					}
 				}
-				const [chapters, summaryKeys] = await Promise.all([
+				const [chapters, summaryStates, meta] = await Promise.all([
 					library.listChapters(book),
-					library.listChapterSummaryKeys(book),
+					library.listChapterSummaryStates(book),
+					library.readMetadata(book),
 				]);
 				const index = chapter ? chapters.findIndex((c) => chapterRelPath(c) === chapterRelPath(chapter)) : -1;
 				const lines = [`书：${book.name}｜目录：${book.dir}`];
+				lines.push(...metadataLines(meta, path.join(book.dir, META_FILE)));
 				// 无活动编辑器时按当前书与阅读进度识别（关掉章节编辑器后仍能定位书）
 				lines.push(`当前打开：${fileRel ?? '（无，按当前书与阅读进度识别）'}`);
 				if (chapter) {
-					const mark = summaryKeys.has(chapterRelPath(chapter)) ? '｜摘要✓' : '';
+					const mark = summaryMark(summaryStates.get(chapterRelPath(chapter)));
 					lines.push(`当前章节：${chapterRelPath(chapter)}｜第${chapter.seq}章｜${chapter.title}${mark}`);
 				} else {
 					lines.push('当前章节：（尚未开始阅读）');
@@ -186,15 +288,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { chapter: string }>('xReader_setProgress', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const chapter = await findChapter(library, book, options.input.chapter);
-				if (!chapter) {
-					throw new Error(
-						vscode.l10n.t(
-							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
-							options.input.chapter
-						)
-					);
-				}
+				const chapter = await requireChapter(library, book, options.input.chapter);
 				await library.setProgress(book.dir, chapterRelPath(chapter));
 				return text(`已将《${book.name}》的阅读进度设为：${chapterRelPath(chapter)}。`);
 			},
@@ -222,28 +316,19 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const volumeName = options.input.volume?.trim();
-				const [volumes, summaryKeys] = await Promise.all([
+				const [volumes, summaryStates] = await Promise.all([
 					library.listVolumes(book),
-					library.listChapterSummaryKeys(book),
+					library.listChapterSummaryStates(book),
 				]);
-				const targets = volumeName ? volumes.filter((v) => v.name === volumeName || v.dirName === volumeName) : volumes;
-				if (targets.length === 0) {
-					if (volumes.length === 0) {
-						return text(`《${book.name}》还没有章节。`);
-					}
-					throw new Error(
-						vscode.l10n.t(
-							'Volume “{0}” not found. Existing: {1}',
-							volumeName!,
-							volumes.map((v) => v.name).join('、') || vscode.l10n.t('(none)')
-						)
-					);
+				if (volumes.length === 0) {
+					return text(`《${book.name}》还没有章节。`);
 				}
+				const targets = volumeName ? [pickVolume(volumes, volumeName)] : volumes;
 				const lines: string[] = [];
 				for (const volume of targets) {
 					lines.push(`【${volume.name}】`);
 					for (const c of volume.chapters) {
-						const mark = summaryKeys.has(chapterRelPath(c)) ? '｜摘要✓' : '';
+						const mark = summaryMark(summaryStates.get(chapterRelPath(c)));
 						lines.push(`${chapterRelPath(c)}｜第${c.seq}章｜${c.title}${mark}`);
 					}
 				}
@@ -255,18 +340,12 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { chapter: string }>('xReader_readChapterSummary', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const chapter = await findChapter(library, book, options.input.chapter);
-				if (!chapter) {
-					throw new Error(
-						vscode.l10n.t(
-							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
-							options.input.chapter
-						)
-					);
-				}
+				const chapter = await requireChapter(library, book, options.input.chapter);
 				const filePath = path.join(book.dir, CHAPTER_SUMMARIES_DIR, chapter.volumeDir ?? '', chapter.fileName);
+				const state = (await library.listChapterSummaryStates(book)).get(chapterRelPath(chapter));
 				try {
-					return text(await fs.readFile(filePath, 'utf8'));
+					const md = await fs.readFile(filePath, 'utf8');
+					return text(state === 'stale' ? `${STALE_NOTICE}${md}` : md);
 				} catch {
 					return text(
 						`第${chapter.seq}章「${chapter.title}」的章节摘要尚未创建。可先用文件工具读取 ${CHAPTERS_DIR}/${chapterRelPath(chapter)}，再将摘要写入：${filePath}`
@@ -284,9 +363,10 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					return text(`《${book.name}》还没有章节。`);
 				}
 				const range = options.input.range?.trim();
+				const stateLabel = (state: SummaryState): string => (state === 'stale' ? '待维护' : state === 'ok' ? '已建' : '未建');
 				if (!range) {
 					const lines = intervals.map(
-						(i) => `${i.fileName}｜第${i.startSeq}–${i.endSeq}章｜${i.exists ? '已建' : '未建'}`
+						(i) => `${i.fileName}｜第${i.startSeq}–${i.endSeq}章｜${stateLabel(i.state)}`
 					);
 					return text(`《${book.name}》区间摘要（每 10 章一个）：\n${lines.join('\n')}`);
 				}
@@ -304,8 +384,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					);
 				}
 				const filePath = path.join(book.dir, INTERVAL_SUMMARIES_DIR, target.fileName);
-				if (target.exists) {
-					return text(await fs.readFile(filePath, 'utf8'));
+				if (target.state !== 'missing') {
+					const md = await fs.readFile(filePath, 'utf8');
+					return text(target.state === 'stale' ? `${STALE_NOTICE}${md}` : md);
 				}
 				const chapterList = target.chapters.map((c) => `${chapterRelPath(c)}（${c.title}）`).join('、');
 				return text(
@@ -329,22 +410,8 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { title: string; volume?: string }>('xReader_createChapter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				let volumeDir: string | undefined;
 				const volume = options.input.volume?.trim();
-				if (volume) {
-					const volumes = await library.listVolumes(book);
-					const found = volumes.find((v) => v.name === volume || v.dirName === volume);
-					if (!found) {
-						throw new Error(
-							vscode.l10n.t(
-								'Volume “{0}” not found. Existing: {1}',
-								volume,
-								volumes.map((v) => v.name).join('、') || vscode.l10n.t('(none)')
-							)
-						);
-					}
-					volumeDir = found.dirName;
-				}
+				const volumeDir = volume ? pickVolume(await library.listVolumes(book), volume).dirName : undefined;
 				const fileName = await library.createChapter(book, options.input.title, volumeDir);
 				return text(`已新建章节：${chapterRelPath({ fileName, volumeDir })}。`);
 			},
@@ -352,6 +419,42 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				invocationMessage: vscode.l10n.t('Create chapter “{0}”', options.input.title),
 			}),
 		}),
+
+		vscode.lm.registerTool<BookInput & { title: string; after?: string; before?: string }>(
+			'xReader_insertChapter',
+			{
+				async invoke(options) {
+					const book = await resolveBook(library, options.input.book);
+					const title = options.input.title?.trim();
+					if (!title) {
+						throw new Error(vscode.l10n.t('Pass the new chapter title via the title parameter.'));
+					}
+					const after = options.input.after?.trim();
+					const before = options.input.before?.trim();
+					if ((after ? 1 : 0) + (before ? 1 : 0) !== 1) {
+						throw new Error(
+							vscode.l10n.t('Pass exactly one of after / before to locate the insertion point.')
+						);
+					}
+					const ref = (after ?? before) as string;
+					const anchor = await requireChapter(library, book, ref);
+					const result = await library.insertChapter(
+						book,
+						title,
+						after ? { after: anchor } : { before: anchor }
+					);
+					const target = chapterRelPath({ fileName: result.fileName, volumeDir: anchor.volumeDir });
+					const shifting =
+						result.renumbered > 0 ? `其后的 ${result.renumbered} 章序号已顺延 +1。` : '';
+					return text(
+						`已在「${anchor.title || anchor.fileName}」${after ? '之后' : '之前'}插入新章节：${target}。${shifting}请用文件工具写入正文。`
+					);
+				},
+				prepareInvocation: (options) => ({
+					invocationMessage: vscode.l10n.t('Insert chapter “{0}”', options.input.title),
+				}),
+			}
+		),
 
 		vscode.lm.registerTool<BookInput & { oldName: string; newName: string }>('xReader_renameVolume', {
 			async invoke(options) {
@@ -559,15 +662,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { chapter: string }>('xReader_deleteChapter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const chapter = await findChapter(library, book, options.input.chapter);
-				if (!chapter) {
-					throw new Error(
-						vscode.l10n.t(
-							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
-							options.input.chapter
-						)
-					);
-				}
+				const chapter = await requireChapter(library, book, options.input.chapter);
 				await library.removeChapter(book, chapter);
 				return text(`已删除第${chapter.seq}章「${chapter.title}」。`);
 			},
@@ -583,15 +678,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { chapter: string; newTitle: string }>('xReader_renameChapter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const chapter = await findChapter(library, book, options.input.chapter);
-				if (!chapter) {
-					throw new Error(
-						vscode.l10n.t(
-							'Chapter “{0}” not found. Use a relative path, file name, or title to reference a chapter.',
-							options.input.chapter
-						)
-					);
-				}
+				const chapter = await requireChapter(library, book, options.input.chapter);
 				const newFileName = await library.renameChapter(book, chapter, options.input.newTitle);
 				return text(
 					`已重命名章节：${chapterRelPath({ fileName: newFileName, volumeDir: chapter.volumeDir })}。`
@@ -609,32 +696,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { name: string; category?: string }>('xReader_deleteNote', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				let subDir = NOTES_DIR;
 				const category = options.input.category?.trim();
-				if (category) {
-					const categories = await library.listNoteCategories(book);
-					const found = categories.find((c) => c.dirName === category || c.name === category);
-					if (!found) {
-						throw new Error(
-							vscode.l10n.t(
-								'Note category “{0}” not found. Existing: {1}',
-								category,
-								categories.map((c) => c.name).join('、') || vscode.l10n.t('(none)')
-							)
-						);
-					}
-					subDir = `${NOTES_DIR}/${found.dirName}`;
-				}
-				const note = await findEntry(library, book, subDir, options.input.name);
-				if (!note) {
-					throw new Error(
-						vscode.l10n.t(
-							'Note “{0}” not found{1}.',
-							options.input.name,
-							category ? vscode.l10n.t(' (category: {0})', category) : ''
-						)
-					);
-				}
+				const subDir = await resolveNoteDir(library, book, category);
+				const note = await requireNote(library, book, subDir, options.input.name, category);
 				await library.removeEntry(book, subDir, note.fileName);
 				return text(`已删除笔记「${note.name}」${category ? `（分类：${category}）` : ''}。`);
 			},
@@ -656,32 +720,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { name: string; newName: string; category?: string }>('xReader_renameNote', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				let subDir = NOTES_DIR;
 				const category = options.input.category?.trim();
-				if (category) {
-					const categories = await library.listNoteCategories(book);
-					const found = categories.find((c) => c.dirName === category || c.name === category);
-					if (!found) {
-						throw new Error(
-							vscode.l10n.t(
-								'Note category “{0}” not found. Existing: {1}',
-								category,
-								categories.map((c) => c.name).join('、') || vscode.l10n.t('(none)')
-							)
-						);
-					}
-					subDir = `${NOTES_DIR}/${found.dirName}`;
-				}
-				const note = await findEntry(library, book, subDir, options.input.name);
-				if (!note) {
-					throw new Error(
-						vscode.l10n.t(
-							'Note “{0}” not found{1}.',
-							options.input.name,
-							category ? vscode.l10n.t(' (category: {0})', category) : ''
-						)
-					);
-				}
+				const subDir = await resolveNoteDir(library, book, category);
+				const note = await requireNote(library, book, subDir, options.input.name, category);
 				const newFileName = await library.renameEntry(book, subDir, note.fileName, options.input.newName);
 				return text(`已重命名笔记：${subDir}/${newFileName}。`);
 			},
@@ -697,17 +738,13 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { name: string }>('xReader_deleteCharacter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const found = await findEntry(library, book, CARDS_DIR, options.input.name);
-				if (!found) {
-					const existing = await library.listEntries(book, CARDS_DIR);
-					throw new Error(
-						vscode.l10n.t(
-							'Character card “{0}” not found. Existing: {1}',
-							options.input.name,
-							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
-						)
-					);
-				}
+				const found = await requireEntry(
+					library,
+					book,
+					CARDS_DIR,
+					options.input.name,
+					'Character card “{0}” not found. Existing: {1}'
+				);
 				await library.removeEntry(book, CARDS_DIR, found.fileName);
 				return text(`已删除角色卡「${found.name}」。`);
 			},
@@ -723,17 +760,13 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { name: string; newName: string }>('xReader_renameCharacter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const found = await findEntry(library, book, CARDS_DIR, options.input.name);
-				if (!found) {
-					const existing = await library.listEntries(book, CARDS_DIR);
-					throw new Error(
-						vscode.l10n.t(
-							'Character card “{0}” not found. Existing: {1}',
-							options.input.name,
-							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
-						)
-					);
-				}
+				const found = await requireEntry(
+					library,
+					book,
+					CARDS_DIR,
+					options.input.name,
+					'Character card “{0}” not found. Existing: {1}'
+				);
 				const newFileName = await library.renameEntry(book, CARDS_DIR, found.fileName, options.input.newName);
 				return text(`已重命名角色卡：${CARDS_DIR}/${newFileName}。`);
 			},
@@ -749,17 +782,13 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { name: string }>('xReader_deleteWorldEntry', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const found = await findEntry(library, book, WORLD_DIR, options.input.name);
-				if (!found) {
-					const existing = await library.listEntries(book, WORLD_DIR);
-					throw new Error(
-						vscode.l10n.t(
-							'World entry “{0}” not found. Existing: {1}',
-							options.input.name,
-							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
-						)
-					);
-				}
+				const found = await requireEntry(
+					library,
+					book,
+					WORLD_DIR,
+					options.input.name,
+					'World entry “{0}” not found. Existing: {1}'
+				);
 				await library.removeEntry(book, WORLD_DIR, found.fileName);
 				return text(`已删除世界书条目「${found.name}」。`);
 			},
@@ -775,17 +804,13 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput & { name: string; newName: string }>('xReader_renameWorldEntry', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const found = await findEntry(library, book, WORLD_DIR, options.input.name);
-				if (!found) {
-					const existing = await library.listEntries(book, WORLD_DIR);
-					throw new Error(
-						vscode.l10n.t(
-							'World entry “{0}” not found. Existing: {1}',
-							options.input.name,
-							existing.map((e) => e.name).join('、') || vscode.l10n.t('(empty)')
-						)
-					);
-				}
+				const found = await requireEntry(
+					library,
+					book,
+					WORLD_DIR,
+					options.input.name,
+					'World entry “{0}” not found. Existing: {1}'
+				);
 				const newFileName = await library.renameEntry(book, WORLD_DIR, found.fileName, options.input.newName);
 				return text(`已重命名世界书条目：${WORLD_DIR}/${newFileName}。`);
 			},

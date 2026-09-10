@@ -1,8 +1,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { mdToPlainText, promptInstallAudio, readCharacterVoiceConfig, readChapterText, resolveChapter, speakViaAudio } from './audio';
+import { mdToPlainText, promptInstallAudio, readChapterText, readCharacterVoiceConfig, resolveChapter, speakViaAudio } from './audio';
 import type { BookInfo, ChapterFile, ChapterVolume, IntervalSummary, NoteCategory } from './model/book';
-import { commitAll } from './services/git';
+import { commitAll, resetHistory } from './services/git';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -18,6 +18,7 @@ import { registerAgentTools } from './tools';
 import { BookshelfProvider } from './views/bookshelfProvider';
 import { ChapterProvider } from './views/chapterProvider';
 import { EntryProvider } from './views/entryProvider';
+import { MetadataProvider } from './views/metadataProvider';
 import { NoteProvider } from './views/noteProvider';
 import { SummaryProvider } from './views/summaryProvider';
 
@@ -27,6 +28,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	const viewIcon = (name: string): vscode.Uri =>
 		vscode.Uri.joinPath(context.extensionUri, 'resources', 'icons', name);
 	const bookshelfProvider = new BookshelfProvider(library, viewIcon('bookshelf.svg'));
+	const metadataProvider = new MetadataProvider(library, viewIcon('metadata.svg'));
 	const chapterProvider = new ChapterProvider(library, viewIcon('volume.svg'), viewIcon('chapter.svg'));
 	const worldProvider = new EntryProvider(library, WORLD_DIR, viewIcon('worldbook.svg'));
 	const cardsProvider = new EntryProvider(library, CARDS_DIR, viewIcon('characters.svg'));
@@ -55,6 +57,9 @@ export function activate(context: vscode.ExtensionContext): void {
 	);
 	const chaptersView = vscode.window.createTreeView('xReader.chapters', {
 		treeDataProvider: chapterProvider,
+	});
+	const metadataView = vscode.window.createTreeView('xReader.metadata', {
+		treeDataProvider: metadataProvider,
 	});
 	const worldView = vscode.window.createTreeView('xReader.worldbook', {
 		treeDataProvider: worldProvider,
@@ -89,6 +94,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		setContext('noBook', !book);
 
 		const titledViews: { view: { title?: string }; name: string }[] = [
+			{ view: metadataView, name: vscode.l10n.t('Metadata') },
 			{ view: chaptersView, name: vscode.l10n.t('Chapters') },
 			{ view: summariesView, name: vscode.l10n.t('Summaries') },
 			{ view: worldView, name: vscode.l10n.t('Worldbook') },
@@ -101,20 +107,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		if (!book) {
 			setContext('emptyChapters', false);
+			setContext('emptyMetadata', false);
 			setContext('emptyWorld', false);
 			setContext('emptyCards', false);
 			setContext('emptyNotes', false);
 			statusBar.hide();
 			return;
 		}
-		const [chapters, world, cards, noteCategories, rootNotes] = await Promise.all([
+		const [chapters, meta, world, cards, noteCategories, rootNotes] = await Promise.all([
 			library.listChapters(book),
+			library.readMetadata(book),
 			library.listEntries(book, WORLD_DIR),
 			library.listEntries(book, CARDS_DIR),
 			library.listNoteCategories(book),
 			library.listNotes(book),
 		]);
 		setContext('emptyChapters', chapters.length === 0);
+		setContext('emptyMetadata', !meta || (meta.fields.length === 0 && meta.sections.length === 0));
 		setContext('emptyWorld', world.length === 0);
 		setContext('emptyCards', cards.length === 0);
 		setContext('emptyNotes', noteCategories.length === 0 && rootNotes.length === 0);
@@ -124,7 +133,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			? chapters.findIndex((c) => chapterRelPath(c) === progress || c.fileName === progress)
 			: -1;
 		statusBar.text =
-			index >= 0 ? `$(book) ${book.name} · ${index + 1}/${chapters.length}` : `$(book) ${book.name}`;
+			index >= 0 ? `${book.name} · ${index + 1}/${chapters.length}` : book.name;
 		statusBar.show();
 	};
 	library.onDidChange(() => void updateViewStates());
@@ -197,7 +206,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		// 侧边栏标题以内容首行 `# 标题` 为准，与目录展示一致；调用方已知章节时跳过重复扫描
 		const target =
 			chapterHint ??
-			(await library.listChapters({ name: path.basename(bookDir), dir: bookDir })).find(
+			(await library.listChapters(bookAt(bookDir))).find(
 				(c) => chapterRelPath(c) === chapterRelPath({ fileName, volumeDir })
 			);
 		void chaptersView
@@ -238,7 +247,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!bookDir || !currentFile) {
 			return;
 		}
-		const book: BookInfo = { name: path.basename(bookDir), dir: bookDir };
+		const book = bookAt(bookDir);
 		const chapters = await library.listChapters(book);
 		const index = chapters.findIndex(
 			(c) => c.fileName === currentFile && (c.volumeDir ?? '') === (currentVolume ?? '')
@@ -259,14 +268,11 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!target) {
 			return;
 		}
-		const name = await vscode.window.showInputBox({
-			title: vscode.l10n.t('New {0}', kindLabel),
-			prompt: vscode.l10n.t('Entry name'),
-		});
-		if (!name?.trim()) {
+		const name = await promptName(vscode.l10n.t('New {0}', kindLabel), vscode.l10n.t('Entry name'));
+		if (!name) {
 			return;
 		}
-		const filePath = await library.createEntry(target, subDir, name.trim());
+		const filePath = await library.createEntry(target, subDir, name);
 		await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 	};
 
@@ -276,11 +282,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!target) {
 			return;
 		}
-		const name = await vscode.window.showInputBox({
-			title: vscode.l10n.t('New Note (1/3)'),
-			prompt: vscode.l10n.t('Note name'),
-		});
-		if (!name?.trim()) {
+		const name = await promptName(vscode.l10n.t('New Note (1/3)'), vscode.l10n.t('Note name'));
+		if (!name) {
 			return;
 		}
 		const categories = await library.listNoteCategories(target);
@@ -288,7 +291,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			[
 				{ label: vscode.l10n.t('(no category)'), dirName: '' },
 				...categories.map((c) => ({ label: c.name, dirName: c.dirName })),
-				{ label: vscode.l10n.t('$(add) New category…'), dirName: undefined },
+				{ label: vscode.l10n.t('New category…'), dirName: undefined },
 			],
 			{ title: vscode.l10n.t('New Note (2/3)'), placeHolder: vscode.l10n.t('Category') }
 		);
@@ -318,21 +321,30 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!picked) {
 			return;
 		}
-		const filePath = await library.createNote(target, name.trim(), categoryDir || undefined, picked.chapter);
+		const filePath = await library.createNote(target, name, categoryDir || undefined, picked.chapter);
 		await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+	};
+
+	/** 由书文件夹路径构造 BookInfo（树项命令通常只带路径）。 */
+	const bookAt = (dir: string): BookInfo => ({ name: path.basename(dir), dir });
+
+	/** 弹出名称输入框（value 为初始值）；取消或留空时返回 undefined。 */
+	const promptName = async (title: string, prompt: string, value?: string): Promise<string | undefined> => {
+		const name = await vscode.window.showInputBox({ title, prompt, value });
+		return name?.trim() || undefined;
 	};
 
 	/** 弹出重命名输入框并执行；取消或留空时不动作。 */
 	const renameWithInput = async (
 		title: string,
 		current: string,
-		action: (name: string) => Promise<unknown>
+		action: (name: string) => Promise<unknown>,
+		prompt = vscode.l10n.t('New name')
 	): Promise<void> => {
-		const name = await vscode.window.showInputBox({ title, value: current, prompt: vscode.l10n.t('New name') });
-		if (!name?.trim()) {
-			return;
+		const name = await promptName(title, prompt, current);
+		if (name) {
+			await action(name);
 		}
-		await action(name.trim());
 	};
 
 	/** 弹出 modal 删除确认；返回是否确认。 */
@@ -341,6 +353,18 @@ export function activate(context: vscode.ExtensionContext): void {
 		const answer = await vscode.window.showWarningMessage(message, { modal: true }, deleteLabel);
 		return answer === deleteLabel;
 	};
+
+	/** 条目/笔记的重命名处理器：树项传入同样的 bookDir/subDir/fileName/name，仅弹窗标题不同。 */
+	const renameEntryHandler =
+		(title: string) =>
+			async (arg?: { bookDir: string; subDir: string; fileName: string; name: string }): Promise<void> => {
+				if (!arg) {
+					return;
+				}
+				await renameWithInput(title, arg.name, (name) =>
+					library.renameEntry(bookAt(arg.bookDir), arg.subDir, arg.fileName, name)
+				);
+			};
 
 	/** 朗读章节正文（无参数时回退到当前章节）；x-audio 缺失时引导安装。 */
 	const speakChapter = async (
@@ -428,15 +452,12 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 		vscode.commands.registerCommand('xReader.newBook', async () => {
-			const name = await vscode.window.showInputBox({
-				title: vscode.l10n.t('New Novel'),
-				prompt: vscode.l10n.t('Book name'),
-			});
-			if (!name?.trim()) {
+			const name = await promptName(vscode.l10n.t('New Novel'), vscode.l10n.t('Book name'));
+			if (!name) {
 				return;
 			}
 			try {
-				const book = await library.createBook(name.trim());
+				const book = await library.createBook(name);
 				await vscode.commands.executeCommand('xReader.openBook', book.dir);
 			} catch (error) {
 				void vscode.window.showErrorMessage(
@@ -466,7 +487,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				}
 				dir = picked.book.dir;
 			}
-			const book: BookInfo = { name: path.basename(dir), dir };
+			const book = bookAt(dir);
 			const chapters = await library.listChapters(book);
 			if (chapters.length === 0) {
 				await library.setCurrentBook(dir);
@@ -492,6 +513,27 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			await vscode.window.showTextDocument(vscode.Uri.file(path.join(bookDir, subDir, fileName)));
+		}),
+		vscode.commands.registerCommand('xReader.openMetadata', async (line?: number) => {
+			const book = library.getCurrentBook();
+			if (!book) {
+				void vscode.window.showInformationMessage(vscode.l10n.t('Select a book in the bookshelf first'));
+				return;
+			}
+			const filePath = await library.ensureMetadata(book);
+			if (!filePath) {
+				void vscode.window.showWarningMessage(
+					vscode.l10n.t('Metadata file is unavailable (the book folder may be gone)')
+				);
+				return;
+			}
+			const editor = await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+			if (line === undefined) {
+				return;
+			}
+			const position = new vscode.Position(Math.min(line, Math.max(editor.document.lineCount - 1, 0)), 0);
+			editor.selection = new vscode.Selection(position, position);
+			editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.AtTop);
 		}),
 		vscode.commands.registerCommand('xReader.prevChapter', () => openNeighbor(-1)),
 		vscode.commands.registerCommand('xReader.nextChapter', () => openNeighbor(1)),
@@ -524,16 +566,15 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!book || !chapter) {
 				return;
 			}
-			const title = await vscode.window.showInputBox({
-				title: vscode.l10n.t('Rename Chapter'),
-				prompt: vscode.l10n.t('New title'),
-				value: chapter.title,
-			});
-			if (!title?.trim()) {
-				return;
-			}
-			const newFileName = await library.renameChapter(book, chapter, title.trim());
-			await openChapter(book.dir, chapter.volumeDir, newFileName);
+			await renameWithInput(
+				vscode.l10n.t('Rename Chapter'),
+				chapter.title,
+				async (title) => {
+					const newFileName = await library.renameChapter(book, chapter, title);
+					await openChapter(book.dir, chapter.volumeDir, newFileName);
+				},
+				vscode.l10n.t('New title')
+			);
 		}),
 		vscode.commands.registerCommand('xReader.moveChapter', async (chapter?: ChapterFile) => {
 			const book = library.getCurrentBook();
@@ -563,41 +604,22 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand(
 			'xReader.renameEntry',
-			async (arg?: { bookDir: string; subDir: string; fileName: string; name: string }) => {
-				if (!arg) {
-					return;
-				}
-				const book = { name: path.basename(arg.bookDir), dir: arg.bookDir };
-				await renameWithInput(vscode.l10n.t('Rename Entry'), arg.name, (name) =>
-					library.renameEntry(book, arg.subDir, arg.fileName, name)
-				);
-			}
+			renameEntryHandler(vscode.l10n.t('Rename Entry'))
 		),
 		vscode.commands.registerCommand(
 			'xReader.renameNote',
-			async (arg?: { bookDir: string; subDir: string; fileName: string; name: string }) => {
-				if (!arg) {
-					return;
-				}
-				const book = { name: path.basename(arg.bookDir), dir: arg.bookDir };
-				await renameWithInput(vscode.l10n.t('Rename Note'), arg.name, (name) =>
-					library.renameEntry(book, arg.subDir, arg.fileName, name)
-				);
-			}
+			renameEntryHandler(vscode.l10n.t('Rename Note'))
 		),
 		vscode.commands.registerCommand('xReader.newVolume', async () => {
 			const book = library.getCurrentBook();
 			if (!book) {
 				return;
 			}
-			const name = await vscode.window.showInputBox({
-				title: vscode.l10n.t('New Volume'),
-				prompt: vscode.l10n.t('Volume name'),
-			});
-			if (!name?.trim()) {
+			const name = await promptName(vscode.l10n.t('New Volume'), vscode.l10n.t('Volume name'));
+			if (!name) {
 				return;
 			}
-			await library.createVolume(book, name.trim());
+			await library.createVolume(book, name);
 		}),
 		vscode.commands.registerCommand('xReader.newChapter', async (volume?: ChapterVolume | string) => {
 			const book = library.getCurrentBook();
@@ -612,14 +634,11 @@ export function activate(context: vscode.ExtensionContext): void {
 					volumeDir = selected.dirName;
 				}
 			}
-			const title = await vscode.window.showInputBox({
-				title: vscode.l10n.t('New Chapter'),
-				prompt: vscode.l10n.t('Chapter title'),
-			});
-			if (!title?.trim()) {
+			const title = await promptName(vscode.l10n.t('New Chapter'), vscode.l10n.t('Chapter title'));
+			if (!title) {
 				return;
 			}
-			const fileName = await library.createChapter(book, title.trim(), volumeDir);
+			const fileName = await library.createChapter(book, title, volumeDir);
 			await openChapter(book.dir, volumeDir, fileName);
 		}),
 		vscode.commands.registerCommand('xReader.renameVolume', async (volume?: ChapterVolume) => {
@@ -656,7 +675,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				}
 				if (await confirmDelete(vscode.l10n.t('Delete chapter summary “{0}”?', fileName))) {
 					await library.removeEntry(
-						{ name: path.basename(bookDir), dir: bookDir },
+						bookAt(bookDir),
 						volumeDir ? `${CHAPTER_SUMMARIES_DIR}/${volumeDir}` : CHAPTER_SUMMARIES_DIR,
 						fileName
 					);
@@ -668,7 +687,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			if (await confirmDelete(vscode.l10n.t('Delete interval summary “{0}”?', fileName))) {
-				await library.removeEntry({ name: path.basename(bookDir), dir: bookDir }, INTERVAL_SUMMARIES_DIR, fileName);
+				await library.removeEntry(bookAt(bookDir), INTERVAL_SUMMARIES_DIR, fileName);
 			}
 		}),
 		vscode.commands.registerCommand('xReader.renameNoteCategory', async (category?: NoteCategory) => {
@@ -696,11 +715,7 @@ export function activate(context: vscode.ExtensionContext): void {
 					return;
 				}
 				if (await confirmDelete(vscode.l10n.t('Delete entry “{0}”?', arg.name))) {
-					await library.removeEntry(
-						{ name: path.basename(arg.bookDir), dir: arg.bookDir },
-						arg.subDir,
-						arg.fileName
-					);
+					await library.removeEntry(bookAt(arg.bookDir), arg.subDir, arg.fileName);
 				}
 			}
 		),
@@ -717,7 +732,7 @@ export function activate(context: vscode.ExtensionContext): void {
 					fileName,
 					volumeDir,
 				};
-				const filePath = await library.ensureChapterSummary({ name: path.basename(bookDir), dir: bookDir }, chapter);
+				const filePath = await library.ensureChapterSummary(bookAt(bookDir), chapter);
 				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 			}
 		),
@@ -727,10 +742,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				if (!bookDir || !interval) {
 					return;
 				}
-				const filePath = await library.ensureIntervalSummary(
-					{ name: path.basename(bookDir), dir: bookDir },
-					interval
-				);
+				const filePath = await library.ensureIntervalSummary(bookAt(bookDir), interval);
 				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 			}
 		),
@@ -753,6 +765,30 @@ export function activate(context: vscode.ExtensionContext): void {
 				ok
 					? vscode.l10n.t('Snapshot saved')
 					: vscode.l10n.t('No changes to commit (or git unavailable)')
+			);
+		}),
+		vscode.commands.registerCommand('xReader.resetHistory', async () => {
+			const root = library.getLibraryPath();
+			if (!root) {
+				return;
+			}
+			const clearLabel = vscode.l10n.t('Clear History');
+			const answer = await vscode.window.showWarningMessage(
+				vscode.l10n.t('Clear all git history of the library and start over from the current files?'),
+				{ modal: true },
+				clearLabel
+			);
+			if (answer !== clearLabel) {
+				return;
+			}
+			const ok = await resetHistory(
+				root,
+				`重建仓库 ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`
+			);
+			void vscode.window.showInformationMessage(
+				ok
+					? vscode.l10n.t('Git history cleared; a fresh commit was created from the current state')
+					: vscode.l10n.t('Clear history failed (git unavailable, or the library folder is inside another repository)')
 			);
 		}),
 		vscode.commands.registerCommand('xReader.refreshBookshelf', () => {

@@ -2,7 +2,7 @@ import type { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, IntervalSummary, NoteCategory, NoteFile } from '../model/book';
+import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, IntervalSummary, NoteCategory, NoteFile, SummaryState } from '../model/book';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -16,6 +16,7 @@ import {
 } from './bookFactory';
 import { commitAll } from './git';
 import {
+	type BookMetadata,
 	buildChapterMarkdown,
 	buildChapterSummaryMarkdown,
 	buildEntryMarkdown,
@@ -28,7 +29,9 @@ import {
 	extractMarkdownTitle,
 	intervalSummaryFileName,
 	navRelPath,
+	parseBookMetadata,
 	parseChapterFileName,
+	planChapterInsertSeq,
 	sanitizeFileTitle,
 	updateChapterNav,
 } from './markdown';
@@ -142,6 +145,50 @@ export class LibraryService {
 		return configured ? vscode.Uri.file(configured).fsPath : configured;
 	}
 
+	/** 提交一次 git 快照（未配置库路径时跳过）。 */
+	private async commit(message: string): Promise<void> {
+		const root = this.getLibraryPath();
+		if (root) {
+			await commitAll(root, message);
+		}
+	}
+
+	/** 提交快照并刷新视图。 */
+	private async commitAndRefresh(message: string): Promise<void> {
+		await this.commit(message);
+		this._onDidChange.fire();
+	}
+
+	/** 章节文件绝对路径（volumeDir 省略时指 章节/ 根，即默认卷）。 */
+	private chapterPath(book: BookInfo, fileName: string, volumeDir?: string): string {
+		return path.join(book.dir, CHAPTERS_DIR, volumeDir ?? '', fileName);
+	}
+
+	/** 章节摘要镜像绝对路径（与 章节/ 目录同构）。 */
+	private summaryPath(book: BookInfo, fileName: string, volumeDir?: string): string {
+		return path.join(book.dir, CHAPTER_SUMMARIES_DIR, volumeDir ?? '', fileName);
+	}
+
+	/** 移动/重命名章节文件及其摘要镜像（用 workspace.fs，让已打开的页签跟随新路径；无镜像时忽略）。 */
+	private async relocateChapterFiles(
+		book: BookInfo,
+		from: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+		to: Pick<ChapterFile, 'fileName' | 'volumeDir'>
+	): Promise<void> {
+		await vscode.workspace.fs.rename(
+			vscode.Uri.file(this.chapterPath(book, from.fileName, from.volumeDir)),
+			vscode.Uri.file(this.chapterPath(book, to.fileName, to.volumeDir))
+		);
+		try {
+			await vscode.workspace.fs.rename(
+				vscode.Uri.file(this.summaryPath(book, from.fileName, from.volumeDir)),
+				vscode.Uri.file(this.summaryPath(book, to.fileName, to.volumeDir))
+			);
+		} catch {
+			// 无摘要镜像时忽略
+		}
+	}
+
 	/** 返回已配置的库目录；未配置（或 force 时）弹窗让用户选择并写入全局配置。 */
 	async ensureLibraryPath(force = false): Promise<string | undefined> {
 		const existing = this.getLibraryPath();
@@ -218,7 +265,7 @@ export class LibraryService {
 		const rootChapters: ChapterFile[] = await Promise.all(
 			rootParsed.map(async ({ parsed, fileName }) => ({
 				...parsed,
-				title: (await this.readChapterContentTitle(path.join(book.dir, CHAPTERS_DIR, fileName))) ?? parsed.title,
+				title: (await this.readChapterContentTitle(this.chapterPath(book, fileName))) ?? parsed.title,
 				fileName,
 			}))
 		);
@@ -258,9 +305,7 @@ export class LibraryService {
 					if (!parsed) {
 						return undefined;
 					}
-					const contentTitle = await this.readChapterContentTitle(
-						path.join(book.dir, CHAPTERS_DIR, dirName, fileName)
-					);
+					const contentTitle = await this.readChapterContentTitle(this.chapterPath(book, fileName, dirName));
 					return { ...parsed, title: contentTitle ?? parsed.title, fileName, volumeDir: dirName };
 				})
 			)
@@ -326,6 +371,30 @@ export class LibraryService {
 			.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
+	/** 读取 元数据.md 并解析；文件缺失时返回 undefined。 */
+	async readMetadata(book: BookInfo): Promise<BookMetadata | undefined> {
+		try {
+			return parseBookMetadata(await fs.readFile(path.join(book.dir, META_FILE), 'utf8'));
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** 确保 元数据.md 存在（缺失时按模板重建并提交），返回其路径；书文件夹不存在等失败时返回 undefined。 */
+	async ensureMetadata(book: BookInfo): Promise<string | undefined> {
+		const filePath = path.join(book.dir, META_FILE);
+		if (await pathExists(filePath)) {
+			return filePath;
+		}
+		try {
+			await fs.writeFile(filePath, buildMetadataMarkdown(book.name, ''), 'utf8');
+		} catch {
+			return undefined;
+		}
+		await this.commitAndRefresh(`重建${META_FILE}（${book.name}）`);
+		return filePath;
+	}
+
 	/** 新建空书：库根下创建书目录骨架（章节/ 与各空目录 + 元数据.md）并 git commit。 */
 	async createBook(name: string): Promise<BookInfo> {
 		const root = await this.ensureLibraryPath();
@@ -365,16 +434,11 @@ export class LibraryService {
 
 	async removeBook(book: BookInfo): Promise<void> {
 		await fs.rm(book.dir, { recursive: true, force: true });
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `移除《${book.name}》`);
-		}
+		await this.commit(`移除《${book.name}》`);
 		if (this.getCurrentBook()?.dir === book.dir) {
 			await this.setCurrentBook(undefined);
 		}
-		const progress = this.context.globalState.get<Record<string, string>>(PROGRESS_KEY, {});
-		delete progress[book.dir];
-		await this.context.globalState.update(PROGRESS_KEY, progress);
+		await this.clearProgress(book.dir);
 		this._onDidChange.fire();
 	}
 
@@ -385,10 +449,7 @@ export class LibraryService {
 		const filePath = path.join(dir, `${sanitizeFileTitle(name)}.md`);
 		if (!(await pathExists(filePath))) {
 			await fs.writeFile(filePath, buildEntryMarkdown(name), 'utf8');
-			const root = this.getLibraryPath();
-			if (root) {
-				await commitAll(root, `新建 ${subDir}/${path.basename(filePath)}`);
-			}
+			await this.commit(`新建 ${subDir}/${path.basename(filePath)}`);
 		}
 		return filePath;
 	}
@@ -397,11 +458,7 @@ export class LibraryService {
 	async removeEntry(book: BookInfo, subDir: string, fileName: string): Promise<void> {
 		await fs.rm(path.join(book.dir, subDir, fileName), { force: true });
 		await closeFileTabs(path.join(book.dir, subDir, fileName));
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `删除 ${subDir}/${fileName}`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`删除 ${subDir}/${fileName}`);
 	}
 
 	/** 删除章节 md 及其摘要镜像，同步重写相邻章导航，并提交 git 快照。 */
@@ -409,13 +466,14 @@ export class LibraryService {
 		const chapters = await this.listChapters(book);
 		const index = chapters.findIndex((c) => chapterRelPath(c) === chapterRelPath(chapter));
 		const prev = index > 0 ? chapters[index - 1] : undefined;
+		const prevPrev = index > 1 ? chapters[index - 2] : undefined;
 		const next = index >= 0 && index < chapters.length - 1 ? chapters[index + 1] : undefined;
 		await Promise.all([
 			prev
 				? this.rewriteChapterNav(
 					book,
 					prev,
-					undefined,
+					prevPrev ? navRelPath(prev.volumeDir, prevPrev.volumeDir, prevPrev.fileName) : undefined,
 					next ? navRelPath(prev.volumeDir, next.volumeDir, next.fileName) : undefined
 				)
 				: Promise.resolve(),
@@ -428,29 +486,25 @@ export class LibraryService {
 				)
 				: Promise.resolve(),
 		]);
-		await fs.rm(path.join(book.dir, CHAPTERS_DIR, chapter.volumeDir ?? '', chapter.fileName), { force: true });
-		await fs.rm(path.join(book.dir, CHAPTER_SUMMARIES_DIR, chapter.volumeDir ?? '', chapter.fileName), {
-			force: true,
-		});
-		await closeFileTabs(path.join(book.dir, CHAPTER_SUMMARIES_DIR, chapter.volumeDir ?? '', chapter.fileName));
+		const chapterFile = this.chapterPath(book, chapter.fileName, chapter.volumeDir);
+		const summaryFile = this.summaryPath(book, chapter.fileName, chapter.volumeDir);
+		await fs.rm(chapterFile, { force: true });
+		await fs.rm(summaryFile, { force: true });
+		await closeFileTabs(summaryFile);
 		// 进度指向被删章时迁移到相邻章（prev 优先），无相邻章则清除
 		const rel = chapterRelPath(chapter);
 		if (this.getProgress(book.dir) === rel) {
-			if (prev || next) {
-				await this.setProgress(book.dir, chapterRelPath(prev ?? next!));
+			// 进度迁移到相邻章（prev 优先），无相邻章则清除
+			const neighbor = prev ?? next;
+			if (neighbor) {
+				await this.setProgress(book.dir, chapterRelPath(neighbor));
 			} else {
-				const store = this.context.globalState.get<Record<string, string>>(PROGRESS_KEY, {});
-				delete store[book.dir];
-				await this.context.globalState.update(PROGRESS_KEY, store);
+				await this.clearProgress(book.dir);
 			}
 		}
-		await closeFileTabs(path.join(book.dir, CHAPTERS_DIR, chapter.volumeDir ?? '', chapter.fileName));
+		await closeFileTabs(chapterFile);
 		await this.updateNotesChapterRef(book, rel, undefined);
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `删除章节 ${chapterRelPath(chapter)}`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`删除章节 ${chapterRelPath(chapter)}`);
 	}
 
 	/** 遍历全部笔记文件（根 + 各分类），回调返回新内容（undefined 不写回）。 */
@@ -484,10 +538,20 @@ export class LibraryService {
 		oldRel: string,
 		ref: { relPath: string; title: string } | undefined
 	): Promise<void> {
+		await this.updateNotesChapterRefs(book, new Map([[oldRel, ref]]));
+	}
+
+	/** 批量更新笔记的章节关联（只遍历一遍全部笔记），键为旧章节相对路径；值为 undefined 时移除关联。 */
+	private async updateNotesChapterRefs(
+		book: BookInfo,
+		refs: Map<string, { relPath: string; title: string } | undefined>
+	): Promise<void> {
 		await this.forEachNote(book, (_filePath, md, relDir) => {
-			if (NOTE_CHAPTER_FM_RE.exec(md)?.[1] !== oldRel) {
+			const oldRel = NOTE_CHAPTER_FM_RE.exec(md)?.[1];
+			if (oldRel === undefined || !refs.has(oldRel)) {
 				return undefined;
 			}
+			const ref = refs.get(oldRel);
 			if (ref) {
 				const prefix = relDir === NOTES_DIR ? '../' : '../../';
 				return md
@@ -530,7 +594,7 @@ export class LibraryService {
 		fileName: string,
 		oldTitle?: string
 	): Promise<void> {
-		const filePath = path.join(book.dir, CHAPTER_SUMMARIES_DIR, volumeDir ?? '', fileName);
+		const filePath = this.summaryPath(book, fileName, volumeDir);
 		let md: string;
 		try {
 			md = await fs.readFile(filePath, 'utf8');
@@ -565,29 +629,19 @@ export class LibraryService {
 		const title = sanitizeFileTitle(newTitle);
 		const displayTitle = newTitle.trim() || title;
 		const newFileName = chapterFileName(seq, title);
-		const volumeDir = chapter.volumeDir ?? '';
-		const oldPath = path.join(book.dir, CHAPTERS_DIR, volumeDir, chapter.fileName);
+		const oldPath = this.chapterPath(book, chapter.fileName, chapter.volumeDir);
 		if (newFileName === chapter.fileName) {
 			// 文件名不变时也同步内容首行，保证显示标题与输入一致
 			await this.updateChapterContentTitle(oldPath, displayTitle);
 			return chapter.fileName;
 		}
-		const newPath = path.join(book.dir, CHAPTERS_DIR, volumeDir, newFileName);
+		const newPath = this.chapterPath(book, newFileName, chapter.volumeDir);
 		if (await pathExists(newPath)) {
 			throw new Error(`章节「${newFileName}」已存在`);
 		}
-		// 用 workspace.fs 重命名，让打开的编辑器跟随新路径
-		await vscode.workspace.fs.rename(vscode.Uri.file(oldPath), vscode.Uri.file(newPath));
+		await this.relocateChapterFiles(book, chapter, { fileName: newFileName, volumeDir: chapter.volumeDir });
 		// 同步内容首行标题，保证显示标题与文件名一致
 		await this.updateChapterContentTitle(newPath, displayTitle);
-		try {
-			await vscode.workspace.fs.rename(
-				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, volumeDir, chapter.fileName)),
-				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, volumeDir, newFileName))
-			);
-		} catch {
-			// 无摘要镜像时忽略
-		}
 		await this.rewriteBookChapterNavs(book);
 		await this.rewriteSummaryOriginal(
 			book,
@@ -604,11 +658,7 @@ export class LibraryService {
 		if (this.getProgress(book.dir) === oldRel) {
 			await this.setProgress(book.dir, newRel);
 		}
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `重命名章节 ${oldRel} → ${newRel}`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`重命名章节 ${oldRel} → ${newRel}`);
 		return newFileName;
 	}
 
@@ -657,7 +707,8 @@ export class LibraryService {
 		const metaPath = path.join(newDir, META_FILE);
 		try {
 			const meta = await fs.readFile(metaPath, 'utf8');
-			const updated = meta.replace(/^title:\s*"[^"]*"\s*$/m, `title: ${JSON.stringify(target)}`);
+			// 手写无引号的 title 一并覆盖，统一写成 JSON 字符串
+			const updated = meta.replace(/^title:[^\n]*$/m, `title: ${JSON.stringify(target)}`);
 			if (updated !== meta) {
 				await fs.writeFile(metaPath, updated, 'utf8');
 			}
@@ -673,10 +724,7 @@ export class LibraryService {
 			delete progress[book.dir];
 			await this.context.globalState.update(PROGRESS_KEY, progress);
 		}
-		if (configuredRoot) {
-			await commitAll(configuredRoot, `重命名书籍《${book.name}》→《${target}》`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`重命名书籍《${book.name}》→《${target}》`);
 		return { name: target, dir: newDir };
 	}
 
@@ -692,29 +740,110 @@ export class LibraryService {
 			throw new Error(`「${newFileName}」已存在`);
 		}
 		await vscode.workspace.fs.rename(vscode.Uri.file(path.join(dir, fileName)), vscode.Uri.file(newPath));
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `重命名 ${subDir}/${fileName} → ${newFileName}`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`重命名 ${subDir}/${fileName} → ${newFileName}`);
 		return newFileName;
 	}
 
-	/** 新建章节 md（全局序号接最大值），重写全书导航；返回文件名。 */
+	/** 新建章节 md（全局序号接最大值），补上前后导航并重写全书导航；返回文件名。 */
 	async createChapter(book: BookInfo, title: string, volumeDir?: string): Promise<string> {
 		const chapters = await this.listChapters(book);
 		const seq = chapters.reduce((max, c) => Math.max(max, c.seq), 0) + 1;
 		const fileName = chapterFileName(seq, title);
-		const dir = path.join(book.dir, CHAPTERS_DIR, volumeDir ?? '');
-		await fs.mkdir(dir, { recursive: true });
-		await fs.writeFile(path.join(dir, fileName), buildChapterMarkdown(title, ''), 'utf8');
+		const filePath = this.chapterPath(book, fileName, volumeDir);
+		await fs.mkdir(path.dirname(filePath), { recursive: true });
+		await fs.writeFile(filePath, buildChapterMarkdown(title, ''), 'utf8');
+		await this.seedNewChapterNav(book, fileName, volumeDir, title);
 		await this.rewriteBookChapterNavs(book);
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `新建章节 ${chapterRelPath({ fileName, volumeDir })}`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`新建章节 ${chapterRelPath({ fileName, volumeDir })}`);
 		return fileName;
+	}
+
+	/** 在参照章节前/后插入新章节（新章节随参照章节所在分卷）。序号有空档时直接插入，无空档时顺延其后章节；返回新文件名与顺延章数。 */
+	async insertChapter(
+		book: BookInfo,
+		title: string,
+		position:
+			| { after: Pick<ChapterFile, 'fileName' | 'volumeDir'> }
+			| { before: Pick<ChapterFile, 'fileName' | 'volumeDir'> }
+	): Promise<{ fileName: string; renumbered: number }> {
+		const chapters = await this.listChapters(book);
+		const anchor = 'after' in position ? position.after : position.before;
+		const at = chapters.findIndex((c) => chapterRelPath(c) === chapterRelPath(anchor));
+		if (at < 0) {
+			throw new Error(`找不到章节「${anchor.fileName}」`);
+		}
+		const plan = planChapterInsertSeq(
+			chapters.map((c) => c.seq),
+			'after' in position ? at + 1 : at
+		);
+		const shiftFrom = plan.shiftFrom;
+		let renumbered = 0;
+		if (shiftFrom !== undefined) {
+			const shifted = chapters.filter((c) => c.seq >= shiftFrom);
+			await this.shiftChapterSeqs(book, shifted);
+			renumbered = shifted.length;
+		}
+		const volumeDir = anchor.volumeDir;
+		const fileName = chapterFileName(plan.seq, title);
+		const filePath = this.chapterPath(book, fileName, volumeDir);
+		await fs.mkdir(path.dirname(filePath), { recursive: true });
+		await fs.writeFile(filePath, buildChapterMarkdown(title, ''), 'utf8');
+		await this.seedNewChapterNav(book, fileName, volumeDir, title);
+		await this.rewriteBookChapterNavs(book);
+		await this.commitAndRefresh(`插入章节 ${chapterRelPath({ fileName, volumeDir })}`);
+		return { fileName, renumbered };
+	}
+
+	/** 给刚创建的新章节写入带前后链接的内容（模板本身没有导航段，其它章节的导航交给 rewriteBookChapterNavs）。 */
+	private async seedNewChapterNav(
+		book: BookInfo,
+		fileName: string,
+		volumeDir: string | undefined,
+		title: string
+	): Promise<void> {
+		const chapters = await this.listChapters(book);
+		const at = chapters.findIndex(
+			(c) => c.fileName === fileName && (c.volumeDir ?? '') === (volumeDir ?? '')
+		);
+		if (at < 0) {
+			return;
+		}
+		const prev = at > 0 ? chapters[at - 1] : undefined;
+		const next = at < chapters.length - 1 ? chapters[at + 1] : undefined;
+		if (!prev && !next) {
+			return;
+		}
+		const md = buildChapterMarkdown(
+			title,
+			'',
+			prev ? navRelPath(volumeDir, prev.volumeDir, prev.fileName) : undefined,
+			next ? navRelPath(volumeDir, next.volumeDir, next.fileName) : undefined
+		);
+		await fs.writeFile(this.chapterPath(book, fileName, volumeDir), md, 'utf8');
+	}
+
+	/** 批量顺延章节序号 +1：按序号降序重命名（避免同名冲突），同步摘要镜像、笔记关联与阅读进度；导航重写与提交由调用方负责。 */
+	private async shiftChapterSeqs(book: BookInfo, chapters: ChapterFile[]): Promise<void> {
+		const refs = new Map<string, { relPath: string; title: string }>();
+		for (const chapter of [...chapters].sort((a, b) => b.seq - a.seq)) {
+			const parsed = parseChapterFileName(chapter.fileName);
+			if (!parsed) {
+				continue;
+			}
+			const newFileName = chapterFileName(chapter.seq + 1, parsed.title);
+			await this.relocateChapterFiles(book, chapter, { fileName: newFileName, volumeDir: chapter.volumeDir });
+			await this.rewriteSummaryOriginal(book, chapter.volumeDir, newFileName);
+			refs.set(chapterRelPath(chapter), {
+				relPath: chapterRelPath({ fileName: newFileName, volumeDir: chapter.volumeDir }),
+				title: parsed.title,
+			});
+		}
+		const progress = this.getProgress(book.dir);
+		const migrated = progress ? refs.get(progress) : undefined;
+		if (migrated) {
+			await this.setProgress(book.dir, migrated.relPath);
+		}
+		await this.updateNotesChapterRefs(book, refs);
 	}
 
 	/** 重命名笔记分类目录（笔记/ 下子目录），返回新目录名。 */
@@ -732,22 +861,14 @@ export class LibraryService {
 			throw new Error(`分类「${target}」已存在`);
 		}
 		await vscode.workspace.fs.rename(vscode.Uri.file(oldDir), vscode.Uri.file(newDir));
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `重命名笔记分类「${oldName}」→「${target}」`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`重命名笔记分类「${oldName}」→「${target}」`);
 		return target;
 	}
 
 	/** 删除笔记分类目录（含其中全部笔记）并提交 git 快照。 */
 	async deleteNoteCategory(book: BookInfo, name: string): Promise<void> {
 		await fs.rm(path.join(book.dir, NOTES_DIR, name), { recursive: true, force: true });
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `删除笔记分类「${name}」`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`删除笔记分类「${name}」`);
 	}
 
 	/** 移动章节到目标分卷（根目录用 undefined），同步移动摘要镜像、重写全书导航、迁移进度与笔记关联。 */
@@ -764,21 +885,11 @@ export class LibraryService {
 		if (targetDir && !(await pathExists(path.join(book.dir, CHAPTERS_DIR, targetDir)))) {
 			throw new Error(`分卷「${targetDir}」不存在`);
 		}
-		const oldPath = path.join(book.dir, CHAPTERS_DIR, fromDir, chapter.fileName);
-		const newPath = path.join(book.dir, CHAPTERS_DIR, targetDir, chapter.fileName);
+		const newPath = this.chapterPath(book, chapter.fileName, targetVolumeDir);
 		if (await pathExists(newPath)) {
 			throw new Error(`目标分卷中已存在「${chapter.fileName}」`);
 		}
-		// 用 workspace.fs 移动，让打开的编辑器跟随新路径
-		await vscode.workspace.fs.rename(vscode.Uri.file(oldPath), vscode.Uri.file(newPath));
-		try {
-			await vscode.workspace.fs.rename(
-				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, fromDir, chapter.fileName)),
-				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, targetDir, chapter.fileName))
-			);
-		} catch {
-			// 无摘要镜像时忽略
-		}
+		await this.relocateChapterFiles(book, chapter, { fileName: chapter.fileName, volumeDir: targetVolumeDir });
 		await this.rewriteBookChapterNavs(book);
 		await this.rewriteSummaryOriginal(book, targetVolumeDir, chapter.fileName);
 		const oldRel = chapterRelPath(chapter);
@@ -790,11 +901,7 @@ export class LibraryService {
 		if (this.getProgress(book.dir) === oldRel) {
 			await this.setProgress(book.dir, newRel);
 		}
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `移动章节 ${oldRel} → ${newRel}`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`移动章节 ${oldRel} → ${newRel}`);
 	}
 
 	/** 重写某章底部导航链接（prev/next 为相对路径，undefined 移除对应链接）；文件不存在时跳过。 */
@@ -804,7 +911,7 @@ export class LibraryService {
 		prev: string | undefined,
 		next: string | undefined
 	): Promise<void> {
-		const filePath = path.join(book.dir, CHAPTERS_DIR, chapter.volumeDir ?? '', chapter.fileName);
+		const filePath = this.chapterPath(book, chapter.fileName, chapter.volumeDir);
 		let md: string;
 		try {
 			md = await fs.readFile(filePath, 'utf8');
@@ -812,8 +919,14 @@ export class LibraryService {
 			return;
 		}
 		const updated = updateChapterNav(md, prev, next);
-		if (updated !== md) {
-			await fs.writeFile(filePath, updated, 'utf8');
+		if (updated === md) {
+			return;
+		}
+		const before = await fs.stat(filePath).catch(() => undefined);
+		await fs.writeFile(filePath, updated, 'utf8');
+		// 仅导航变化不算正文修订：恢复原修改时间，免得插章/删章时相邻章的摘要被判成待维护
+		if (before) {
+			await fs.utimes(filePath, before.atime, before.mtime).catch(() => undefined);
 		}
 	}
 
@@ -834,44 +947,52 @@ export class LibraryService {
 		);
 	}
 
-	/** 已有章节摘要的相对路径集合（键格式同 chapterRelPath）；镜像 章节/ 的分卷结构。 */
-	async listChapterSummaryKeys(book: BookInfo): Promise<Set<string>> {
-		const keys = new Set<string>();
-		let entries: Dirent[];
+	/** 全书章节摘要状态（键同 chapterRelPath）：摘要缺失为 missing，章节比摘要更新为 stale。 */
+	async listChapterSummaryStates(book: BookInfo): Promise<Map<string, SummaryState>> {
+		const volumes = await this.listVolumes(book);
+		const states = new Map<string, SummaryState>();
+		await Promise.all(
+			volumes.flatMap((volume) => volume.chapters).map(async (chapter) => {
+				const summaryMtime = await this.mtime(this.summaryPath(book, chapter.fileName, chapter.volumeDir));
+				if (summaryMtime === undefined) {
+					states.set(chapterRelPath(chapter), 'missing');
+					return;
+				}
+				const chapterMtime = await this.newestMtime([this.chapterPath(book, chapter.fileName, chapter.volumeDir)]);
+				states.set(chapterRelPath(chapter), chapterMtime > summaryMtime ? 'stale' : 'ok');
+			})
+		);
+		return states;
+	}
+
+	/** 文件最后修改时间（毫秒）；文件不存在或不可读时返回 undefined。 */
+	private async mtime(filePath: string): Promise<number | undefined> {
 		try {
-			entries = await fs.readdir(path.join(book.dir, CHAPTER_SUMMARIES_DIR), { withFileTypes: true });
+			return (await fs.stat(filePath)).mtimeMs;
 		} catch {
-			return keys;
+			return undefined;
 		}
-		for (const entry of entries) {
-			if (entry.isDirectory()) {
-				let files: string[];
-				try {
-					files = await fs.readdir(path.join(book.dir, CHAPTER_SUMMARIES_DIR, entry.name));
-				} catch {
-					continue;
-				}
-				for (const fileName of files) {
-					if (parseChapterFileName(fileName)) {
-						keys.add(`${entry.name}/${fileName}`);
-					}
-				}
-			} else if (parseChapterFileName(entry.name)) {
-				keys.add(entry.name);
-			}
+	}
+
+	/** 一组文件中最新的修改时间（毫秒）；全部缺失时返回 0。 */
+	private async newestMtime(filePaths: string[]): Promise<number> {
+		const times = await Promise.all(filePaths.map((filePath) => this.mtime(filePath)));
+		let newest = 0;
+		for (const time of times) {
+			newest = Math.max(newest, time ?? 0);
 		}
-		return keys;
+		return newest;
 	}
 
 	/** 章节摘要文件路径（不存在则从模板创建），返回文件路径。 */
 	async ensureChapterSummary(book: BookInfo, chapter: ChapterFile): Promise<string> {
-		const filePath = path.join(book.dir, CHAPTER_SUMMARIES_DIR, chapter.volumeDir ?? '', chapter.fileName);
+		const filePath = this.summaryPath(book, chapter.fileName, chapter.volumeDir);
 		if (!(await pathExists(filePath))) {
 			await fs.mkdir(path.dirname(filePath), { recursive: true });
 			const prefix = chapter.volumeDir ? '../../' : '../';
 			const href = `${prefix}${CHAPTERS_DIR}/${chapterRelPath(chapter)}`;
 			const contentTitle = await this.readChapterContentTitle(
-				path.join(book.dir, CHAPTERS_DIR, chapter.volumeDir ?? '', chapter.fileName)
+				this.chapterPath(book, chapter.fileName, chapter.volumeDir)
 			);
 			await fs.writeFile(
 				filePath,
@@ -882,27 +1003,37 @@ export class LibraryService {
 		return filePath;
 	}
 
-	/** 区间摘要列表：全部章节每 10 章一个区间，附带摘要文件是否已存在。 */
+	/** 区间摘要列表：全部章节每 10 章一个区间，摘要状态按区间内最新章节的修改时间判定。 */
 	async listIntervalSummaries(book: BookInfo): Promise<IntervalSummary[]> {
 		const chapters = await this.listChapters(book);
 		if (chapters.length === 0) {
 			return [];
 		}
-		let files: string[] = [];
-		try {
-			files = await fs.readdir(path.join(book.dir, INTERVAL_SUMMARIES_DIR));
-		} catch {
-			// 目录不存在时视为全部未建
-		}
-		const existing = new Set(files);
 		const intervals: IntervalSummary[] = [];
 		for (let i = 0; i < chapters.length; i += INTERVAL_SUMMARY_SIZE) {
 			const chunk = chapters.slice(i, i + INTERVAL_SUMMARY_SIZE);
 			const startSeq = chunk[0].seq;
 			const endSeq = chunk[chunk.length - 1].seq;
-			const fileName = intervalSummaryFileName(startSeq, endSeq);
-			intervals.push({ startSeq, endSeq, fileName, chapters: chunk, exists: existing.has(fileName) });
+			intervals.push({
+				startSeq,
+				endSeq,
+				fileName: intervalSummaryFileName(startSeq, endSeq),
+				chapters: chunk,
+				state: 'missing',
+			});
 		}
+		await Promise.all(
+			intervals.map(async (interval) => {
+				const summaryMtime = await this.mtime(path.join(book.dir, INTERVAL_SUMMARIES_DIR, interval.fileName));
+				if (summaryMtime === undefined) {
+					return;
+				}
+				const newest = await this.newestMtime(
+					interval.chapters.map((c) => this.chapterPath(book, c.fileName, c.volumeDir))
+				);
+				interval.state = newest > summaryMtime ? 'stale' : 'ok';
+			})
+		);
 		return intervals;
 	}
 
@@ -953,10 +1084,7 @@ export class LibraryService {
 				}
 				: undefined;
 			await fs.writeFile(filePath, buildNoteMarkdown(name, link), 'utf8');
-			const root = this.getLibraryPath();
-			if (root) {
-				await commitAll(root, `新建笔记 ${safeCategory ? `${safeCategory}/` : ''}${path.basename(filePath)}`);
-			}
+			await this.commit(`新建笔记 ${safeCategory ? `${safeCategory}/` : ''}${path.basename(filePath)}`);
 		}
 		return filePath;
 	}
@@ -969,11 +1097,7 @@ export class LibraryService {
 			throw new Error(`分卷「${dirName}」已存在`);
 		}
 		await fs.mkdir(dir, { recursive: true });
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `新建分卷「${dirName}」`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`新建分卷「${dirName}」`);
 		return dirName;
 	}
 
@@ -1017,11 +1141,7 @@ export class LibraryService {
 		if (progress && progress.startsWith(`${oldName}/`)) {
 			await this.setProgress(book.dir, `${target}/${progress.slice(oldName.length + 1)}`);
 		}
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `重命名分卷「${oldName}」→「${target}」`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`重命名分卷「${oldName}」→「${target}」`);
 		return target;
 	}
 
@@ -1050,17 +1170,11 @@ export class LibraryService {
 				if (first) {
 					await this.setProgress(book.dir, chapterRelPath(first));
 				} else {
-					const store = this.context.globalState.get<Record<string, string>>(PROGRESS_KEY, {});
-					delete store[book.dir];
-					await this.context.globalState.update(PROGRESS_KEY, store);
+					await this.clearProgress(book.dir);
 				}
 			}
 		}
-		const root = this.getLibraryPath();
-		if (root) {
-			await commitAll(root, `删除分卷「${name}」`);
-		}
-		this._onDidChange.fire();
+		await this.commitAndRefresh(`删除分卷「${name}」`);
 	}
 
 	getCurrentBook(): BookInfo | undefined {
@@ -1090,6 +1204,13 @@ export class LibraryService {
 		progress[bookDir] = fileName;
 		await this.context.globalState.update(PROGRESS_KEY, progress);
 		this._onDidChange.fire();
+	}
+
+	/** 清除某书的阅读进度。 */
+	private async clearProgress(bookDir: string): Promise<void> {
+		const store = this.context.globalState.get<Record<string, string>>(PROGRESS_KEY, {});
+		delete store[bookDir];
+		await this.context.globalState.update(PROGRESS_KEY, store);
 	}
 
 	private ensureWatcher(): void {

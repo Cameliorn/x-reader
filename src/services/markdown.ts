@@ -23,6 +23,30 @@ export function chapterFileName(seq: number, title: string): string {
 	return `${String(seq).padStart(4, '0')}-${sanitizeFileTitle(title)}.md`;
 }
 
+/** 插入章节的序号方案。 */
+export interface ChapterInsertPlan {
+	/** 新章节序号 */
+	seq: number;
+	/** 需要顺延 +1 的起始序号（含）；undefined 表示有空档，无需顺延 */
+	shiftFrom?: number;
+}
+
+/** 计算在 seqs（全书章节按显示顺序的序号列表）第 index 个位置插章时的序号方案：优先用空档，无空档则顺延该位置及其后的序号。 */
+export function planChapterInsertSeq(seqs: number[], index: number): ChapterInsertPlan {
+	const prev = index > 0 ? seqs[index - 1] : undefined;
+	const next = index < seqs.length ? seqs[index] : undefined;
+	if (next === undefined) {
+		// 追加到末尾：直接接最大值
+		return { seq: seqs.reduce((max, seq) => Math.max(max, seq), 0) + 1 };
+	}
+	// 序号唯一但按（分卷, 序号）排序，故候选号还须确认未被其他分卷占用
+	const candidate = prev === undefined ? next - 1 : prev + 1;
+	if (candidate > 0 && candidate < next && (prev === undefined || candidate > prev) && !seqs.includes(candidate)) {
+		return { seq: candidate };
+	}
+	return { seq: next, shiftFrom: next };
+}
+
 export function parseChapterFileName(fileName: string): { seq: number; title: string } | undefined {
 	const match = CHAPTER_FILE_RE.exec(fileName);
 	if (!match) {
@@ -98,6 +122,79 @@ export function extractMarkdownTitle(firstLine: string): string | undefined {
 	const match = /^#(?!#)\s*(.+)$/.exec(firstLine);
 	const title = match?.[1]?.trim();
 	return title ? title : undefined;
+}
+
+/** 元数据.md 的 frontmatter 字段。 */
+export interface MetadataField {
+	/** frontmatter 键（title/author 等） */
+	key: string;
+	/** 值（已去引号） */
+	value: string;
+	/** 该行行号（0 起） */
+	line: number;
+}
+
+/** 元数据.md 的正文二级小节（## 简介 / ## 写作要求 等）。 */
+export interface MetadataSection {
+	/** 小节标题 */
+	title: string;
+	/** 小节正文（首尾空白已去） */
+	body: string;
+	/** 标题行行号（0 起） */
+	line: number;
+}
+
+export interface BookMetadata {
+	fields: MetadataField[];
+	sections: MetadataSection[];
+}
+
+const FM_DELIM_RE = /^---\s*$/;
+// 键允许中文/空格等手写写法，只排除 YAML 列表项（- 开头）、注释与缩进行
+const FM_LINE_RE = /^(?![-#\s])([^:]*?)\s*:\s*(.*)$/;
+const H2_RE = /^##(?!#)\s*(.+?)\s*$/;
+
+/** 去 YAML 字符串引号（写盘时用 JSON.stringify，含转义需按 JSON 解析）。 */
+function unquoteYamlValue(raw: string): string {
+	const value = raw.trim();
+	if (!value.startsWith('"') || !value.endsWith('"')) {
+		return value.startsWith("'") && value.endsWith("'") ? value.slice(1, -1) : value;
+	}
+	try {
+		return JSON.parse(value) as string;
+	} catch {
+		return value.slice(1, -1);
+	}
+}
+
+/** 解析 元数据.md：frontmatter 键值对 + 正文二级小节（三级标题归入小节正文）。 */
+export function parseBookMetadata(text: string): BookMetadata {
+	const lines = text.split(/\r\n|\r|\n/);
+	const fields: MetadataField[] = [];
+	const sections: MetadataSection[] = [];
+	let index = 0;
+	if (FM_DELIM_RE.test(lines[0] ?? '')) {
+		for (index = 1; index < lines.length && !FM_DELIM_RE.test(lines[index]); index++) {
+			const match = FM_LINE_RE.exec(lines[index]);
+			if (match) {
+				fields.push({ key: match[1], value: unquoteYamlValue(match[2]), line: index });
+			}
+		}
+		index++;
+	}
+	for (; index < lines.length; index++) {
+		const match = H2_RE.exec(lines[index]);
+		if (!match) {
+			continue;
+		}
+		let end = index + 1;
+		while (end < lines.length && !H2_RE.test(lines[end])) {
+			end++;
+		}
+		sections.push({ title: match[1], body: lines.slice(index + 1, end).join('\n').trim(), line: index });
+		index = end - 1;
+	}
+	return { fields, sections };
 }
 
 /** 生成章节 md：# 标题 + 段落空行 + 底部上一章/下一章导航（相对 章节/ 的相对路径，尖括号包裹以兼容含空格文件名）。 */

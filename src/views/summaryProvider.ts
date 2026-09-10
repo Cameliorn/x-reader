@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import type { ChapterFile, ChapterVolume, IntervalSummary } from '../model/book';
+import type { ChapterFile, ChapterVolume, IntervalSummary, SummaryState } from '../model/book';
 import { CHAPTER_SUMMARIES_DIR, chapterRelPath, INTERVAL_SUMMARIES_DIR, LibraryService } from '../services/library';
 import { LibraryTreeProvider } from './libraryTreeProvider';
 
-type SummaryChapter = ChapterFile & { hasSummary?: boolean };
+type SummaryChapter = ChapterFile & { state?: SummaryState };
 
 /** 顶层分组：章节摘要 / 区间摘要。 */
 interface GroupNode {
@@ -13,7 +13,11 @@ interface GroupNode {
 
 type SummaryNode = GroupNode | ChapterVolume | SummaryChapter | IntervalSummary;
 
-/** 摘要视图：顶层分 章节摘要（卷→章）与 区间摘要（每 10 章一个区间）两组，✓ 标记已建；点击打开（不存在则从模板创建）。 */
+/** 状态标记：✓ 最新、⚠ 待维护（摘要创建后章节又有改动）；未创建不显示。 */
+const stateMark = (state: SummaryState | undefined): string | undefined =>
+	state === 'ok' ? '✓' : state === 'stale' ? '⚠' : undefined;
+
+/** 摘要视图：顶层分 章节摘要（卷→章）与 区间摘要（每 10 章一个区间）两组，✓ 最新 / ⚠ 待维护；点击打开（不存在则从模板创建）。 */
 export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 	constructor(
 		library: LibraryService,
@@ -31,29 +35,23 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 			return [];
 		}
 		if (element === undefined) {
-			const [volumes, keys, intervals] = await Promise.all([
-				this.library.listVolumes(book),
-				this.library.listChapterSummaryKeys(book),
+			const [states, intervals] = await Promise.all([
+				this.library.listChapterSummaryStates(book),
 				this.library.listIntervalSummaries(book),
 			]);
-			const total = volumes.reduce((n, volume) => n + volume.chapters.length, 0);
-			if (total === 0) {
+			if (states.size === 0) {
 				// 无章节时置空，让 viewsWelcome 的空态提示生效
 				return [];
 			}
-			const done = volumes.reduce(
-				(n, volume) => n + volume.chapters.filter((c) => keys.has(chapterRelPath(c))).length,
-				0
-			);
-			const intervalDone = intervals.filter((i) => i.exists).length;
+			const statuses = [...states.values()];
 			return [
 				{
 					kind: 'chapterSummaries',
-					description: vscode.l10n.t('{0}/{1} created', done, total),
+					description: this.countDescription(statuses),
 				},
 				{
 					kind: 'intervalSummaries',
-					description: vscode.l10n.t('{0}/{1} created', intervalDone, intervals.length),
+					description: this.countDescription(intervals.map((i) => i.state)),
 				},
 			];
 		}
@@ -61,19 +59,27 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 			if (element.kind === 'intervalSummaries') {
 				return this.library.listIntervalSummaries(book);
 			}
-			const [volumes, keys] = await Promise.all([
+			const [volumes, states] = await Promise.all([
 				this.library.listVolumes(book),
-				this.library.listChapterSummaryKeys(book),
+				this.library.listChapterSummaryStates(book),
 			]);
 			return volumes.map((volume) => ({
 				...volume,
 				chapters: volume.chapters.map((chapter) => ({
 					...chapter,
-					hasSummary: keys.has(chapterRelPath(chapter)),
+					state: states.get(chapterRelPath(chapter)) ?? 'missing',
 				})),
 			}));
 		}
 		return 'chapters' in element && !('startSeq' in element) ? element.chapters : [];
+	}
+
+	/** 分组/分卷描述：已建比例 + 待维护数量。 */
+	private countDescription(states: SummaryState[]): string {
+		const done = states.filter((state) => state !== 'missing').length;
+		const base = vscode.l10n.t('{0}/{1} created', done, states.length);
+		const stale = states.filter((state) => state === 'stale').length;
+		return stale > 0 ? `${base} · ${vscode.l10n.t('{0} stale', stale)}` : base;
 	}
 
 	getTreeItem(node: SummaryNode): vscode.TreeItem {
@@ -106,8 +112,7 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 		item.id = book ? `${book.dir}/${CHAPTER_SUMMARIES_DIR}/${volume.dirName ?? ''}` : undefined;
 		item.iconPath = this.volumeIcon;
 		item.contextValue = 'summaryVolume';
-		const done = volume.chapters.filter((c) => (c as SummaryChapter).hasSummary).length;
-		item.description = vscode.l10n.t('{0}/{1} created', done, volume.chapters.length);
+		item.description = this.countDescription(volume.chapters.map((c) => (c as SummaryChapter).state ?? 'missing'));
 		return item;
 	}
 
@@ -119,10 +124,13 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 			: undefined;
 		item.iconPath = this.chapterSummaryIcon;
 		item.contextValue = 'chapterSummary';
-		item.description = chapter.hasSummary ? '✓' : undefined;
-		item.tooltip = chapter.hasSummary
-			? vscode.l10n.t('{0} · summary created', chapterRelPath(chapter))
-			: vscode.l10n.t('{0} · click to create summary', chapterRelPath(chapter));
+		item.description = stateMark(chapter.state);
+		item.tooltip =
+			chapter.state === 'stale'
+				? vscode.l10n.t('{0} · needs update', chapterRelPath(chapter))
+				: chapter.state === 'ok'
+					? vscode.l10n.t('{0} · summary created', chapterRelPath(chapter))
+					: vscode.l10n.t('{0} · click to create summary', chapterRelPath(chapter));
 		if (book) {
 			item.command = {
 				command: 'xReader.openChapterSummary',
@@ -143,11 +151,13 @@ export class SummaryProvider extends LibraryTreeProvider<SummaryNode> {
 		item.id = book ? `${book.dir}/${INTERVAL_SUMMARIES_DIR}/${interval.fileName}` : undefined;
 		item.iconPath = this.intervalIcon;
 		item.contextValue = 'intervalSummary';
-		item.description = interval.exists ? '✓' : undefined;
+		item.description = stateMark(interval.state);
 		const chapterList = interval.chapters.map((c) => c.title).join('、');
-		item.tooltip = `${label}（${interval.chapters.length} 章）\n${chapterList}\n${interval.exists
-			? vscode.l10n.t('summary created')
-			: vscode.l10n.t('click to create summary')
+		item.tooltip = `${label}（${interval.chapters.length} 章）\n${chapterList}\n${interval.state === 'stale'
+			? vscode.l10n.t('needs update')
+			: interval.state === 'ok'
+				? vscode.l10n.t('summary created')
+				: vscode.l10n.t('click to create summary')
 			}`;
 		if (book) {
 			item.command = {

@@ -19,13 +19,16 @@ import {
 	buildChapterMarkdown,
 	buildChapterSummaryMarkdown,
 	buildIntervalSummaryMarkdown,
+	buildMetadataMarkdown,
 	buildNoteMarkdown,
 	chapterFileName,
 	chineseNumberToInt,
 	extractMarkdownTitle,
 	intervalSummaryFileName,
 	navRelPath,
+	parseBookMetadata,
 	parseChapterFileName,
+	planChapterInsertSeq,
 	sanitizeFileTitle,
 	updateChapterNav,
 } from '../services/markdown';
@@ -46,6 +49,21 @@ suite('markdown helpers', () => {
 	test('chapterFileName 序号四位零填充', () => {
 		assert.strictEqual(chapterFileName(3, '初见'), '0003-初见.md');
 		assert.strictEqual(chapterFileName(12345, '尾声'), '12345-尾声.md');
+	});
+
+	test('planChapterInsertSeq 有空档直接插，无空档顺延其后序号', () => {
+		// 连续序号：顺延
+		assert.deepStrictEqual(planChapterInsertSeq([1, 2, 3], 1), { seq: 2, shiftFrom: 2 });
+		assert.deepStrictEqual(planChapterInsertSeq([1, 2, 3], 3), { seq: 4 });
+		// 有空档：直接插入，不顺延
+		assert.deepStrictEqual(planChapterInsertSeq([1, 5, 9], 1), { seq: 2 });
+		// 插到最前：序号 1 被占用时顺延，否则取 next-1
+		assert.deepStrictEqual(planChapterInsertSeq([1, 2], 0), { seq: 1, shiftFrom: 1 });
+		assert.deepStrictEqual(planChapterInsertSeq([4, 5], 0), { seq: 3 });
+		// 空档号被其他分卷占用（序号全局唯一）：顺延
+		assert.deepStrictEqual(planChapterInsertSeq([1, 3, 2], 1), { seq: 3, shiftFrom: 3 });
+		// 空书追加
+		assert.deepStrictEqual(planChapterInsertSeq([], 0), { seq: 1 });
 	});
 
 	test('parseChapterFileName 解析合法文件名，拒绝非章节文件', () => {
@@ -77,6 +95,67 @@ suite('markdown helpers', () => {
 		assert.strictEqual(chineseNumberToInt('一万零一'), 10001);
 		assert.strictEqual(chineseNumberToInt('〇'), 0);
 		assert.strictEqual(chineseNumberToInt('abc'), undefined);
+	});
+
+	test('parseBookMetadata 解析 frontmatter 字段与正文小节', () => {
+		const text = buildMetadataMarkdown('雨夜', '雨夜.txt');
+		const meta = parseBookMetadata(text);
+		assert.deepStrictEqual(
+			meta.fields.map((f) => f.key),
+			['title', 'author', 'created', 'source']
+		);
+		assert.deepStrictEqual(
+			meta.fields.map((f) => f.value),
+			['雨夜', '', meta.fields[2].value, '雨夜.txt']
+		);
+		assert.match(meta.fields[2].value, /^\d{4}-\d{2}-\d{2}$/);
+		// 行号指向字段/小节标题本身所在行（0 起）
+		assert.strictEqual(text.split('\n')[meta.fields[0].line], 'title: "雨夜"');
+		assert.deepStrictEqual(
+			meta.sections.map((s) => s.title),
+			['简介', '写作要求']
+		);
+		assert.strictEqual(text.split('\n')[meta.sections[1].line], '## 写作要求');
+	});
+
+	test('parseBookMetadata 处理引号转义、手写键名与三级标题', () => {
+		const meta = parseBookMetadata(
+			[
+				'---',
+				'title: "雨天\\"夜"',
+				'custom: 2026-01-01',
+				'书名: 雨夜',
+				'not a field',
+				'- 列表项: 忽略',
+				'# 注释: 忽略',
+				'---',
+				'## 简介',
+				'',
+				'第一行',
+				'第二行',
+				'',
+				'### 子标题',
+				'细节',
+				'## 写作要求',
+				'',
+				'禁止上帝视角',
+				'',
+			].join('\n')
+		);
+		assert.deepStrictEqual(
+			meta.fields.map((f) => [f.key, f.value]),
+			[
+				['title', '雨天"夜'],
+				['custom', '2026-01-01'],
+				['书名', '雨夜'],
+			]
+		);
+		assert.deepStrictEqual(meta.sections, [
+			{ title: '简介', body: '第一行\n第二行\n\n### 子标题\n细节', line: 8 },
+			{ title: '写作要求', body: '禁止上帝视角', line: 15 },
+		]);
+		assert.deepStrictEqual(parseBookMetadata(''), { fields: [], sections: [] });
+		assert.deepStrictEqual(parseBookMetadata('# 只有标题'), { fields: [], sections: [] });
 	});
 
 	test('buildChapterMarkdown 首章无上一章链接，中间章双向导航', () => {
@@ -490,6 +569,81 @@ suite('LibraryService 写操作', () => {
 		}
 	});
 
+	test('insertChapter 在两章之间插章并顺延其后序号（同步文件名、摘要镜像、导航、进度与笔记）', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const [first, second, third] = await service.listChapters(book);
+			await service.ensureChapterSummary(book, third);
+			await service.setProgress(book.dir, chapterRelPath(third));
+			const note = await service.createNote(book, '关联丙', undefined, third);
+
+			const inserted = await service.insertChapter(book, '第1.5章 插', { after: first });
+			assert.strictEqual(inserted.fileName, '0002-第1.5章 插.md');
+			assert.strictEqual(inserted.renumbered, 2);
+
+			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
+			assert.ok(await exists(path.join(volDir, inserted.fileName)));
+			assert.ok(await exists(path.join(volDir, '0003-第2章 乙.md')));
+			assert.ok(await exists(path.join(volDir, '0004-第3章 丙.md')));
+			assert.ok(!(await exists(path.join(volDir, second.fileName))));
+			assert.ok(!(await exists(path.join(volDir, third.fileName))));
+
+			// 顺序不变，导航按新文件名重排
+			const chapters = await service.listChapters(book);
+			assert.deepStrictEqual(
+				chapters.map((c) => chapterRelPath(c)),
+				[
+					'第一卷/0001-第1章 甲.md',
+					'第一卷/0002-第1.5章 插.md',
+					'第一卷/0003-第2章 乙.md',
+					'第一卷/0004-第3章 丙.md',
+				]
+			);
+			const insertedMd = await fs.readFile(path.join(volDir, inserted.fileName), 'utf8');
+			assert.ok(insertedMd.includes('[← 上一章](<0001-第1章 甲.md>)'));
+			assert.ok(insertedMd.includes('[下一章 →](<0003-第2章 乙.md>)'));
+			const firstMd = await fs.readFile(path.join(volDir, '0001-第1章 甲.md'), 'utf8');
+			assert.ok(firstMd.includes('[下一章 →](<0002-第1.5章 插.md>)'));
+
+			// 摘要镜像跟随改名，原文链接同步
+			const summary = path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', '0004-第3章 丙.md');
+			assert.ok(await exists(summary));
+			assert.ok(!(await exists(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', third.fileName))));
+			assert.ok((await fs.readFile(summary, 'utf8')).includes('(<../../章节/第一卷/0004-第3章 丙.md>)'));
+
+			// 进度与笔记关联迁移到新文件名
+			assert.strictEqual(service.getProgress(book.dir), '第一卷/0004-第3章 丙.md');
+			assert.ok((await fs.readFile(note, 'utf8')).includes('chapter: "第一卷/0004-第3章 丙.md"'));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('insertChapter 序号有空档时直接插入，不顺延后续章节', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const chapters = await service.listChapters(book);
+			// 手工腾出空档：把第 2 章改名到 0005（跳过 0002）
+			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
+			await fs.rename(path.join(volDir, chapters[1].fileName), path.join(volDir, '0005-第2章 乙.md'));
+
+			const inserted = await service.insertChapter(book, '插章', { after: chapters[0] });
+			assert.strictEqual(inserted.fileName, '0002-插章.md');
+			assert.strictEqual(inserted.renumbered, 0);
+			assert.ok(await exists(path.join(volDir, '0005-第2章 乙.md')));
+			assert.deepStrictEqual(
+				(await service.listChapters(book)).map((c) => c.fileName),
+				['0001-第1章 甲.md', '0002-插章.md', '0003-第3章 丙.md', '0005-第2章 乙.md']
+			);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('renameChapter 同步内容首行标题，文件名不变时也纠正首行', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
@@ -513,6 +667,57 @@ suite('LibraryService 写操作', () => {
 			await service.renameChapter(book, last, '第3章 丙');
 			const lastMd = await fs.readFile(lastPath, 'utf8');
 			assert.ok(lastMd.startsWith('# 第3章 丙\n'));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('章节/区间摘要状态：摘要之后章节被改动即待维护，仅导航重写不算改动', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', '书.txt', THREE_CHAPTER_TEXT);
+			const [first, second, third] = await service.listChapters(book);
+			const volDir = path.join(book.dir, CHAPTERS_DIR, '第一卷');
+			const firstSummary = await service.ensureChapterSummary(book, first);
+			const secondSummary = await service.ensureChapterSummary(book, second);
+			const base = Math.floor(Date.now() / 1000) - 60;
+			const touch = (filePath: string, offset: number): Promise<void> =>
+				fs.utimes(filePath, base + offset, base + offset);
+			await touch(firstSummary, 10);
+			await touch(path.join(volDir, first.fileName), 10);
+			await touch(secondSummary, 10);
+			await touch(path.join(volDir, second.fileName), 5);
+
+			let states = await service.listChapterSummaryStates(book);
+			assert.strictEqual(states.get(chapterRelPath(first)), 'ok');
+			assert.strictEqual(states.get(chapterRelPath(second)), 'stale');
+			assert.strictEqual(states.get(chapterRelPath(third)), 'missing');
+
+			// 摘要更新到章节之后 → 恢复最新
+			await touch(secondSummary, 20);
+			states = await service.listChapterSummaryStates(book);
+			assert.strictEqual(states.get(chapterRelPath(second)), 'ok');
+
+			// 删除末章只会重写第二段的导航链接，不应把它的摘要判成待维护，也不该丢掉它的「上一章」链接
+			const secondPath = path.join(volDir, second.fileName);
+			assert.ok((await fs.readFile(secondPath, 'utf8')).includes('下一章'));
+			await service.removeChapter(book, third);
+			const secondMd = await fs.readFile(secondPath, 'utf8');
+			assert.ok(!secondMd.includes('下一章'));
+			assert.ok(secondMd.includes(`[← 上一章](<${first.fileName}>)`));
+			// 仅导航变化不会把修改时间刷成当前时间
+			assert.ok((await fs.stat(secondPath)).mtimeMs < Date.now() - 30_000);
+			states = await service.listChapterSummaryStates(book);
+			assert.strictEqual(states.get(chapterRelPath(second)), 'ok');
+
+			// 区间摘要：区间内任一章节更新即待维护
+			const [interval] = await service.listIntervalSummaries(book);
+			const intervalPath = await service.ensureIntervalSummary(book, interval);
+			await touch(intervalPath, 30);
+			assert.strictEqual((await service.listIntervalSummaries(book))[0].state, 'ok');
+			await touch(path.join(volDir, first.fileName), 40);
+			assert.strictEqual((await service.listIntervalSummaries(book))[0].state, 'stale');
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}
