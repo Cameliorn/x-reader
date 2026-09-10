@@ -686,8 +686,9 @@ suite('LibraryService 写操作', () => {
 				fs.utimes(filePath, base + offset, base + offset);
 			await touch(firstSummary, 10);
 			await touch(path.join(volDir, first.fileName), 10);
-			await touch(secondSummary, 10);
-			await touch(path.join(volDir, second.fileName), 5);
+			// 第二段：摘要后章节又被改动（章节 mtime 比摘要新）→ 待维护
+			await touch(secondSummary, 5);
+			await touch(path.join(volDir, second.fileName), 10);
 
 			let states = await service.listChapterSummaryStates(book);
 			assert.strictEqual(states.get(chapterRelPath(first)), 'ok');
