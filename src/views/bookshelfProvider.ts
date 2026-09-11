@@ -97,8 +97,4 @@ export class BookshelfProvider extends LibraryTreeProvider<BookshelfItem> {
 		item.command = { command: 'xReader.openBook', title: vscode.l10n.t('Open'), arguments: [book] };
 		return item;
 	}
-
-	refresh(): void {
-		this._onDidChangeTreeData.fire();
-	}
 }

@@ -134,7 +134,7 @@ export interface MetadataField {
 	line: number;
 }
 
-/** 元数据.md 的正文二级小节（## 简介 / ## 写作要求 等）。 */
+/** 元数据.md 的正文二级小节（## 简介 / ## 说明 等）。 */
 export interface MetadataSection {
 	/** 小节标题 */
 	title: string;
@@ -214,7 +214,7 @@ export function buildChapterMarkdown(title: string, body: string, prevRelPath?: 
 	return `# ${title}\n\n${paragraphs.join('\n\n')}\n\n${nav}`;
 }
 
-/** 元数据.md：frontmatter 存字段，正文的"写作要求"充当 agent 的常驻 instructions。 */
+/** 元数据.md：frontmatter 存字段，正文的"说明"充当 agent 的常驻 instructions。 */
 export function buildMetadataMarkdown(title: string): string {
 	const date = new Date().toISOString().slice(0, 10);
 	return [
@@ -227,7 +227,7 @@ export function buildMetadataMarkdown(title: string): string {
 		'## 简介',
 		'',
 		'',
-		'## 写作要求',
+		'## 说明',
 		'',
 		'',
 	].join('\n');

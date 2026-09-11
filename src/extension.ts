@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { mdToPlainText, promptInstallAudio, readChapterText, readCharacterVoiceConfig, resolveChapter, speakViaAudio } from './audio';
-import type { BookInfo, ChapterFile, ChapterVolume, IntervalSummary, NoteCategory } from './model/book';
+import type { BookInfo, ChapterFile, ChapterVolume, IntervalSummary } from './model/book';
 import { commitAll, resetHistory } from './services/git';
 import {
 	CARDS_DIR,
@@ -11,6 +11,7 @@ import {
 	closeFileTabs,
 	INTERVAL_SUMMARIES_DIR,
 	LibraryService,
+	NOTES_DIR,
 	parseChapterFilePath,
 	PRIMARY_KEEP_VERSION_NAME,
 	WORLD_DIR,
@@ -19,10 +20,16 @@ import { parseChapterFileName } from './services/markdown';
 import { registerAgentTools } from './tools';
 import { BookshelfProvider, type BookshelfItem } from './views/bookshelfProvider';
 import { ChapterProvider, type ChapterVersionNode } from './views/chapterProvider';
-import { EntryProvider } from './views/entryProvider';
+import { EntryProvider, type EntryCategoryNode, type EntryNode, type EntryProviderOptions } from './views/entryProvider';
 import { MetadataProvider } from './views/metadataProvider';
-import { NoteProvider } from './views/noteProvider';
 import { SummaryProvider } from './views/summaryProvider';
+
+/** 本地时间戳 `YYYY-MM-DD HH:mm:ss`，用于 git 提交信息（此前用 toISOString 记的是 UTC 时间）。 */
+function localTimestamp(): string {
+	const now = new Date();
+	const pad = (value: number): string => String(value).padStart(2, '0');
+	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
 
 export function activate(context: vscode.ExtensionContext): void {
 	const library = new LibraryService(context);
@@ -37,8 +44,16 @@ export function activate(context: vscode.ExtensionContext): void {
 		viewIcon('chapter.svg'),
 		viewIcon('version.svg')
 	);
-	const worldProvider = new EntryProvider(library, WORLD_DIR, viewIcon('worldbook.svg'));
-	const cardsProvider = new EntryProvider(library, CARDS_DIR, viewIcon('characters.svg'));
+	// 三个条目视图（世界书/角色卡/笔记）共用 EntryProvider，仅根目录、图标与条目菜单不同
+	const categoryIcon = viewIcon('category.svg');
+	const entryProviderOptions = (
+		rootDir: string,
+		entryIcon: vscode.Uri,
+		entryContextValue = 'entry',
+		openTitle = vscode.l10n.t('Open')
+	): EntryProviderOptions => ({ rootDir, entryIcon, categoryIcon, entryContextValue, openTitle });
+	const worldProvider = new EntryProvider(library, entryProviderOptions(WORLD_DIR, viewIcon('worldbook.svg')));
+	const cardsProvider = new EntryProvider(library, entryProviderOptions(CARDS_DIR, viewIcon('characters.svg')));
 	const summaryProvider = new SummaryProvider(
 		library,
 		viewIcon('summaries.svg'),
@@ -46,7 +61,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		viewIcon('summary-chapter.svg'),
 		viewIcon('summary-interval.svg')
 	);
-	const noteProvider = new NoteProvider(library, viewIcon('notes.svg'), viewIcon('note-category.svg'));
+	const notesProvider = new EntryProvider(
+		library,
+		entryProviderOptions(NOTES_DIR, viewIcon('notes.svg'), 'note', vscode.l10n.t('Open Note'))
+	);
 
 	const bookshelfView = vscode.window.createTreeView('xReader.bookshelf', {
 		treeDataProvider: bookshelfProvider,
@@ -78,7 +96,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		treeDataProvider: summaryProvider,
 	});
 	const notesView = vscode.window.createTreeView('xReader.notes', {
-		treeDataProvider: noteProvider,
+		treeDataProvider: notesProvider,
 	});
 
 	registerAgentTools(context, library);
@@ -121,19 +139,26 @@ export function activate(context: vscode.ExtensionContext): void {
 			statusBar.hide();
 			return;
 		}
-		const [chapters, meta, world, cards, noteCategories, rootNotes] = await Promise.all([
+		/** 条目视图空态：既无条目也无分类（分类下可能还没有条目）。 */
+		const isEmptySection = async (subDir: string): Promise<boolean> => {
+			const [categories, entries] = await Promise.all([
+				library.listChildCategories(book, subDir),
+				library.listEntries(book, subDir),
+			]);
+			return categories.length === 0 && entries.length === 0;
+		};
+		const [chapters, meta, emptyWorld, emptyCards, emptyNotes] = await Promise.all([
 			library.listChapters(book),
 			library.readMetadata(book),
-			library.listEntries(book, WORLD_DIR),
-			library.listEntries(book, CARDS_DIR),
-			library.listNoteCategories(book),
-			library.listNotes(book),
+			isEmptySection(WORLD_DIR),
+			isEmptySection(CARDS_DIR),
+			isEmptySection(NOTES_DIR),
 		]);
 		setContext('emptyChapters', chapters.length === 0);
 		setContext('emptyMetadata', !meta || (meta.fields.length === 0 && meta.sections.length === 0));
-		setContext('emptyWorld', world.length === 0);
-		setContext('emptyCards', cards.length === 0);
-		setContext('emptyNotes', noteCategories.length === 0 && rootNotes.length === 0);
+		setContext('emptyWorld', emptyWorld);
+		setContext('emptyCards', emptyCards);
+		setContext('emptyNotes', emptyNotes);
 
 		const progress = library.getProgress(book.dir);
 		const index = progress
@@ -260,22 +285,55 @@ export function activate(context: vscode.ExtensionContext): void {
 		await openChapter(bookDir, neighbor.volumeDir, neighbor.fileName, neighbor);
 	};
 
-	/** 在当前书（或指定书）的 世界书/角色卡 下新建条目并打开。 */
-	const createEntry = async (book: BookInfo | undefined, subDir: string, kindLabel: string): Promise<void> => {
+	/** 选择分类（世界书/角色卡/笔记通用）：返回 '' 表示根目录，undefined 表示取消；可选已有分类或输入新分类路径。 */
+	const pickCategory = async (book: BookInfo, subDir: string, title: string): Promise<string | undefined> => {
+		const categories = await library.listCategories(book, subDir);
+		const items: { label: string; value?: string }[] = [
+			{ label: vscode.l10n.t('(root)'), value: '' },
+			...categories.map((c) => ({ label: c.path, value: c.path })),
+			{ label: vscode.l10n.t('New category…'), value: undefined },
+		];
+		const picked = await vscode.window.showQuickPick(items, {
+			title,
+			placeHolder: vscode.l10n.t('Category'),
+		});
+		if (!picked) {
+			return undefined;
+		}
+		if (picked.value !== undefined) {
+			return picked.value;
+		}
+		const input = await vscode.window.showInputBox({ title, prompt: vscode.l10n.t('Category name') });
+		return input === undefined ? undefined : input.trim();
+	};
+
+	/** 在 世界书/角色卡 下新建条目并打开；categoryPath 给定（右键分类）时不再询问分类。 */
+	const createEntry = async (
+		book: BookInfo | undefined,
+		subDir: string,
+		kindLabel: string,
+		categoryPath?: string
+	): Promise<void> => {
 		const target = book ?? library.getCurrentBook();
 		if (!target) {
 			return;
 		}
-		const name = await promptName(vscode.l10n.t('New {0}', kindLabel), vscode.l10n.t('Entry name'));
+		const title = vscode.l10n.t('New {0}', kindLabel);
+		const name = await promptName(title, vscode.l10n.t('Entry name'));
 		if (!name) {
 			return;
 		}
-		const filePath = await library.createEntry(target, subDir, name);
+		// '' 表示条目根目录（不分类），undefined 表示用户取消
+		const category = categoryPath ?? (await pickCategory(target, subDir, title));
+		if (category === undefined) {
+			return;
+		}
+		const filePath = await library.createEntry(target, subDir, name, category);
 		await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 	};
 
 	/** 新建笔记：名称 → 分类（可选）→ 关联章节（可选），然后创建并打开。 */
-	const createNote = async (book: BookInfo | undefined): Promise<void> => {
+	const createNote = async (book: BookInfo | undefined, categoryPath?: string): Promise<void> => {
 		const target = book ?? library.getCurrentBook();
 		if (!target) {
 			return;
@@ -284,28 +342,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!name) {
 			return;
 		}
-		const categories = await library.listNoteCategories(target);
-		const categoryPicked = await vscode.window.showQuickPick(
-			[
-				{ label: vscode.l10n.t('(no category)'), dirName: '' },
-				...categories.map((c) => ({ label: c.name, dirName: c.dirName })),
-				{ label: vscode.l10n.t('New category…'), dirName: undefined },
-			],
-			{ title: vscode.l10n.t('New Note (2/3)'), placeHolder: vscode.l10n.t('Category') }
-		);
-		if (!categoryPicked) {
-			return;
-		}
-		let categoryDir = categoryPicked.dirName;
+		// '' 表示条目根目录（不分类），undefined 表示用户取消
+		const categoryDir = categoryPath ?? (await pickCategory(target, NOTES_DIR, vscode.l10n.t('New Note (2/3)')));
 		if (categoryDir === undefined) {
-			const input = await vscode.window.showInputBox({
-				title: vscode.l10n.t('New Note (2/3)'),
-				prompt: vscode.l10n.t('Category'),
-			});
-			if (input === undefined) {
-				return;
-			}
-			categoryDir = input.trim();
+			return;
 		}
 		const chapters = await library.listChapters(target);
 		const items: ({ label: string; description?: string; chapter?: ChapterFile })[] = [
@@ -319,12 +359,18 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (!picked) {
 			return;
 		}
-		const filePath = await library.createNote(target, name, categoryDir || undefined, picked.chapter);
+		const filePath = await library.createNote(target, name, categoryDir, picked.chapter);
 		await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 	};
 
 	/** 由书文件夹路径构造 BookInfo（树项命令通常只带路径）。 */
 	const bookAt = (dir: string): BookInfo => ({ name: path.basename(dir), dir });
+
+	/** 条目命令参数：书架书名节点是 BookInfo；条目视图的分类节点则指向当前书 + 该分类路径。 */
+	const entryTarget = (
+		arg?: BookInfo | EntryCategoryNode
+	): { book: BookInfo | undefined; categoryPath: string | undefined } =>
+		arg && 'rootDir' in arg ? { book: undefined, categoryPath: arg.path } : { book: arg, categoryPath: undefined };
 
 	/** 弹出名称输入框（value 为初始值）；取消或留空时返回 undefined。 */
 	const promptName = async (title: string, prompt: string, value?: string): Promise<string | undefined> => {
@@ -352,10 +398,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		return answer === deleteLabel;
 	};
 
-	/** 条目/笔记的重命名处理器：树项传入同样的 bookDir/subDir/fileName/name，仅弹窗标题不同。 */
+	/** 条目/笔记的重命名处理器：树项传入同样的节点信息，仅弹窗标题不同。 */
 	const renameEntryHandler =
 		(title: string) =>
-			async (arg?: { bookDir: string; subDir: string; fileName: string; name: string }): Promise<void> => {
+			async (arg?: EntryNode): Promise<void> => {
 				if (!arg) {
 					return;
 				}
@@ -642,13 +688,19 @@ export function activate(context: vscode.ExtensionContext): void {
 				await library.removeBookFromShelf(node.shelfName, node.name);
 			}
 		}),
-		vscode.commands.registerCommand('xReader.newCharacterCard', (book?: BookInfo) =>
-			createEntry(book, CARDS_DIR, vscode.l10n.t('Character Card'))
-		),
-		vscode.commands.registerCommand('xReader.newWorldEntry', (book?: BookInfo) =>
-			createEntry(book, WORLD_DIR, vscode.l10n.t('World Entry'))
-		),
-		vscode.commands.registerCommand('xReader.newNote', (book?: BookInfo) => createNote(book)),
+		// 世界书/角色卡/笔记三处的「新建条目」：书架书名节点传 BookInfo，分类节点传分类路径
+		vscode.commands.registerCommand('xReader.newCharacterCard', (arg?: BookInfo | EntryCategoryNode) => {
+			const { book, categoryPath } = entryTarget(arg);
+			return createEntry(book, CARDS_DIR, vscode.l10n.t('Character Card'), categoryPath);
+		}),
+		vscode.commands.registerCommand('xReader.newWorldEntry', (arg?: BookInfo | EntryCategoryNode) => {
+			const { book, categoryPath } = entryTarget(arg);
+			return createEntry(book, WORLD_DIR, vscode.l10n.t('World Entry'), categoryPath);
+		}),
+		vscode.commands.registerCommand('xReader.newNote', (arg?: BookInfo | EntryCategoryNode) => {
+			const { book, categoryPath } = entryTarget(arg);
+			return createNote(book, categoryPath);
+		}),
 		vscode.commands.registerCommand('xReader.deleteChapter', async (chapter?: ChapterFile) => {
 			const book = library.getCurrentBook();
 			if (!book || !chapter) {
@@ -858,27 +910,45 @@ export function activate(context: vscode.ExtensionContext): void {
 				await library.removeEntry(bookAt(bookDir), INTERVAL_SUMMARIES_DIR, fileName);
 			}
 		}),
-		vscode.commands.registerCommand('xReader.renameNoteCategory', async (category?: NoteCategory) => {
+		// 分类操作：世界书/角色卡/笔记 三处共用（节点自带 rootDir）
+		vscode.commands.registerCommand('xReader.newCategory', async (node?: EntryCategoryNode) => {
 			const book = library.getCurrentBook();
-			if (!book || !category) {
+			if (!book || !node) {
 				return;
 			}
-			await renameWithInput(vscode.l10n.t('Rename Note Category'), category.name, (name) =>
-				library.renameNoteCategory(book, category.dirName, name)
+			const name = await promptName(vscode.l10n.t('New Sub-category'), vscode.l10n.t('Category name'));
+			if (!name) {
+				return;
+			}
+			try {
+				await library.createCategory(book, node.rootDir, `${node.path}/${name}`);
+			} catch (error) {
+				void vscode.window.showErrorMessage(
+					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
+				);
+			}
+		}),
+		vscode.commands.registerCommand('xReader.renameCategory', async (node?: EntryCategoryNode) => {
+			const book = library.getCurrentBook();
+			if (!book || !node) {
+				return;
+			}
+			await renameWithInput(vscode.l10n.t('Rename Category'), node.name, (name) =>
+				library.renameCategory(book, node.rootDir, node.path, name)
 			);
 		}),
-		vscode.commands.registerCommand('xReader.deleteNoteCategory', async (category?: NoteCategory) => {
+		vscode.commands.registerCommand('xReader.deleteCategory', async (node?: EntryCategoryNode) => {
 			const book = library.getCurrentBook();
-			if (!book || !category) {
+			if (!book || !node) {
 				return;
 			}
-			if (await confirmDelete(vscode.l10n.t('Delete note category “{0}” and all its notes?', category.name))) {
-				await library.deleteNoteCategory(book, category.dirName);
+			if (await confirmDelete(vscode.l10n.t('Delete category “{0}” and all its entries?', node.path))) {
+				await library.deleteCategory(book, node.rootDir, node.path);
 			}
 		}),
 		vscode.commands.registerCommand(
 			'xReader.deleteEntry',
-			async (arg?: { bookDir: string; subDir: string; fileName: string; name: string }) => {
+			async (arg?: EntryNode) => {
 				if (!arg) {
 					return;
 				}
@@ -924,11 +994,9 @@ export function activate(context: vscode.ExtensionContext): void {
 				void vscode.window.showInformationMessage(vscode.l10n.t('Select a book in the bookshelf first'));
 				return;
 			}
-			const ok = await commitAll(
-				root,
-				`快照《${book.name}》 ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
-				[path.relative(root, book.dir)]
-			);
+			const ok = await commitAll(root, `快照《${book.name}》 ${localTimestamp()}`, [
+				path.relative(root, book.dir),
+			]);
 			void vscode.window.showInformationMessage(
 				ok
 					? vscode.l10n.t('Snapshot saved')
@@ -940,7 +1008,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!root) {
 				return;
 			}
-			const clearLabel = vscode.l10n.t('Clear History');
+			const clearLabel = vscode.l10n.t('Clear Git History');
 			const answer = await vscode.window.showWarningMessage(
 				vscode.l10n.t('Clear all git history of the library and start over from the current files?'),
 				{ modal: true },
@@ -949,18 +1017,25 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (answer !== clearLabel) {
 				return;
 			}
-			const ok = await resetHistory(
-				root,
-				`重建仓库 ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`
-			);
-			void vscode.window.showInformationMessage(
-				ok
-					? vscode.l10n.t('Git history cleared; a fresh commit was created from the current state')
-					: vscode.l10n.t('Clear history failed (git unavailable, or the library folder is inside another repository)')
-			);
-		}),
-		vscode.commands.registerCommand('xReader.refreshBookshelf', () => {
-			bookshelfProvider.refresh();
+			const result = await resetHistory(root, `重建仓库 ${localTimestamp()}`);
+			if (result.ok) {
+				void vscode.window.showInformationMessage(
+					vscode.l10n.t('Git history cleared; a fresh commit was created from the current state')
+				);
+				return;
+			}
+			// 按具体原因提示，避免把「位于其他仓库内部」与「git 命令失败」混为一谈
+			const message =
+				result.reason === 'nested-repo'
+					? vscode.l10n.t(
+						'Clear Git history failed: the library folder is inside another repository, so its history belongs to that repository.'
+					)
+					: result.reason === 'gitnotdir'
+						? vscode.l10n.t(
+							'Clear Git history failed: the library .git is not a directory (it may be a worktree or submodule).'
+						)
+						: vscode.l10n.t('Clear Git history failed: {0}', result.detail);
+			void vscode.window.showWarningMessage(message);
 		}),
 		vscode.commands.registerCommand(
 			'xReader.speakChapter',

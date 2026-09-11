@@ -2,6 +2,27 @@
 
 所有重要变更均记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 新增
+
+- 世界书、角色卡、笔记三处的**分类**统一：三者的子目录即分类，均支持多级嵌套（如 `世界书/地理/城邦/`），视图内以可折叠的分类节点呈现，根目录条目照常直接列出（不再区分「未分类」）。分类可右键「新建子分类 / 重命名 / 删除」，删除分类会连同其下全部条目与子分类；新建条目时可选择已有分类、输入多级新分类路径（`剧情/支线`）或直接放根目录；空分类会写入 `.gitkeep` 纳入 git 快照。
+- 新增 agent 工具 `xReader_renameCharacterCategory` / `xReader_deleteCharacterCategory` / `xReader_renameWorldCategory` / `xReader_deleteWorldCategory`；`xReader_createCharacter` / `xReader_createWorldEntry` 新增可选 `category` 参数（可多级路径，不存在则创建），`xReader_renameCharacter` / `xReader_deleteCharacter` / `xReader_renameWorldEntry` / `xReader_deleteWorldEntry` 新增可选 `category` 以便定位分类下的条目；三个 list 工具改为按分类分组输出（工具数 36 → 40）。
+
+### 修复
+
+- 修复大书库（数千章节文件）下「清除 Git 历史」误报失败：首次提交时 `git commit` 会为每个文件打印一行 `create mode`，输出超过 Node `execFile` 默认 1MB 缓冲，命令被中断后判为失败，而仓库其实已经重建成功。提交改为加 `--quiet` 抑制逐文件输出，输出缓冲上限提到 32MB 兜底；同类问题也影响快照提交（大书库的首个快照会误报「没有需要提交的变更」）。
+- 清除历史失败时按真实原因分别提示（书库位于其他仓库内部 / `.git` 不是目录 / git 命令错误并附原始错误信息），不再把三种情况混成一句猜测。
+- 提交信息里的时间戳改用本地时间（此前用 `toISOString()` 记的是 UTC，本地 10:23 的操作在历史里显示为 02:23）。
+
+### 优化
+
+- 移除书架视图标题栏的「刷新书架」按钮：书库目录下的 md/json 变更（含外部编辑）经文件 watcher 与 `LibraryService.onDidChange` 自动刷新全部视图，该按钮冗余，书架视图现在与其他六个视图一致。
+- 元数据模板（`buildMetadataMarkdown`）里的 `## 写作要求` 小节更名为 `## 说明`；已有书中的旧标题不受影响（小节按 `## ` 标题通用解析）。
+- 中文本地化术语统一：书库（原与「小说库」混用）、书籍条目（原与「小说」混用，导入 txt 仍称「导入小说」）、新建类操作（原「创建分卷 / 创建章节版本」与「新建分卷 / 新建章节版本」并存）、书籍名统一用《书名》包裹、删除确认统一为「确定删除…？」；「清除历史」按钮与命令统一为「清除 Git 历史」（英文源同步从 `Clear History` 改为 `Clear Git History`）。
+- 设置项 `xReader.libraryPath` 的描述与书架空态链接改用「书库目录」「新建书籍」，与命令标题一致。
+- 文档同步：README 的语言模型工具数量 35 → 40，视图表格与特性列表补上条目分类（支持多级）说明；AGENTS.md 补上条目分类的 API 约定与新增工具。
+
 ## [1.2.1] - 2026-09-10
 
 ### 新增

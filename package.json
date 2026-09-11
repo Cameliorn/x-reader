@@ -326,14 +326,20 @@
         "icon": "resources/icons/trash.svg"
       },
       {
-        "command": "xReader.renameNoteCategory",
-        "title": "%command.renameNoteCategory.title%",
+        "command": "xReader.newCategory",
+        "title": "%command.newCategory.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-category.svg"
+      },
+      {
+        "command": "xReader.renameCategory",
+        "title": "%command.renameCategory.title%",
         "category": "X Reader",
         "icon": "resources/icons/pencil.svg"
       },
       {
-        "command": "xReader.deleteNoteCategory",
-        "title": "%command.deleteNoteCategory.title%",
+        "command": "xReader.deleteCategory",
+        "title": "%command.deleteCategory.title%",
         "category": "X Reader",
         "icon": "resources/icons/trash.svg"
       },
@@ -370,12 +376,6 @@
         "title": "%command.snapshot.title%",
         "category": "X Reader",
         "icon": "resources/icons/snapshot.svg"
-      },
-      {
-        "command": "xReader.refreshBookshelf",
-        "title": "%command.refreshBookshelf.title%",
-        "category": "X Reader",
-        "icon": "resources/icons/refresh.svg"
       },
       {
         "command": "xReader.resetHistory",
@@ -419,7 +419,7 @@
         "toolReferenceName": "getCurrentChapter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/book.svg",
-        "modelDescription": "获取当前正在阅读的书：优先从活动编辑器解析——只要打开的是某本书内的文件（章节/元数据/世界书/角色卡/章节摘要/区间摘要/笔记），即可定位所属书与打开的文件；否则回退当前书架选中的书。返回书文件夹名、书目录、本书 元数据.md 的字段与各小节（简介、写作要求等，不必再用文件工具读一遍）、当前打开文件、当前章节（相对路径、序号、标题、摘要状态）与进度位置。无参数；先调用它取得上下文，可省略其他工具的 book 参数；要操作其他书时先 xReader_listBooks 或在 book 参数中显式指定书文件夹名。",
+        "modelDescription": "获取当前正在阅读的书：优先从活动编辑器解析——只要打开的是某本书内的文件（章节/元数据/世界书/角色卡/章节摘要/区间摘要/笔记），即可定位所属书与打开的文件；否则回退当前书架选中的书。返回书文件夹名、书目录、本书 元数据.md 的字段与各小节（简介、说明等，不必再用文件工具读一遍）、当前打开文件、当前章节（相对路径、序号、标题、摘要状态）与进度位置。无参数；先调用它取得上下文，可省略其他工具的 book 参数；要操作其他书时先 xReader_listBooks 或在 book 参数中显式指定书文件夹名。",
         "inputSchema": {
           "type": "object",
           "properties": {}
@@ -951,7 +951,7 @@
         "toolReferenceName": "listNotes",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/notes.svg",
-        "modelDescription": "列出一本书的全部笔记（笔记/ 下，含分类子目录），附关联章节信息。读取与编辑笔记内容直接用文件工具即可。",
+        "modelDescription": "列出一本书的全部笔记（笔记/ 下，含分类子目录），按分类分组，附关联章节信息。读取与编辑笔记内容直接用文件工具即可。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1061,7 +1061,7 @@
         "toolReferenceName": "renameNoteCategory",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名笔记分类目录（笔记/ 下子目录），目录内笔记随目录迁移。",
+        "modelDescription": "重命名笔记分类目录（可多级，oldName 用相对路径如 剧情/支线，只改末级名），目录内笔记与子分类随目录迁移。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1090,7 +1090,7 @@
         "toolReferenceName": "deleteNoteCategory",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除笔记分类目录（笔记/ 下子目录）及其全部笔记。删除前会向用户确认。",
+        "modelDescription": "删除笔记分类目录（可多级）及其下全部笔记与子分类。删除前会向用户确认。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1114,7 +1114,7 @@
         "toolReferenceName": "listCharacters",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/characters.svg",
-        "modelDescription": "列出一本书的全部角色卡（角色卡/ 下的 md 文件）。读取与编辑角色卡内容直接用文件工具即可。",
+        "modelDescription": "列出一本书的全部角色卡（角色卡/ 下，含分类子目录），按分类分组。读取与编辑角色卡内容直接用文件工具即可。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1131,7 +1131,7 @@
         "toolReferenceName": "createCharacter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/add-character.svg",
-        "modelDescription": "在 角色卡/ 下新建角色卡 md。同名文件已存在时不覆盖。",
+        "modelDescription": "在 角色卡/ 下新建角色卡 md：可选分类（写入 角色卡/分类/ 子目录，可多级，不存在则创建）。同名文件已存在时不覆盖。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1142,6 +1142,10 @@
             "name": {
               "type": "string",
               "description": "角色名"
+            },
+            "category": {
+              "type": "string",
+              "description": "分类路径（可选，可多级如 主角/配角；省略时放 角色卡/ 根目录）"
             }
           },
           "required": [
@@ -1155,7 +1159,7 @@
         "toolReferenceName": "renameCharacter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名 角色卡/ 下的角色卡 md。name 可用角色名或文件名。",
+        "modelDescription": "重命名 角色卡/ 下的角色卡 md。name 可用角色名或文件名，category 指定所在分类（可多级，如 主角/配角；省略时在 角色卡/ 根目录查找）。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1170,6 +1174,10 @@
             "newName": {
               "type": "string",
               "description": "新角色名"
+            },
+            "category": {
+              "type": "string",
+              "description": "角色卡所在分类路径（可选；根目录省略）"
             }
           },
           "required": [
@@ -1184,7 +1192,7 @@
         "toolReferenceName": "deleteCharacter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除 角色卡/ 下的角色卡 md。name 为角色名（不含扩展名）。删除前会向用户确认。",
+        "modelDescription": "删除 角色卡/ 下的角色卡 md。name 为角色名（不含扩展名），category 指定所在分类（可多级；省略时在 角色卡/ 根目录查找）。删除前会向用户确认。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1195,6 +1203,63 @@
             "name": {
               "type": "string",
               "description": "角色名"
+            },
+            "category": {
+              "type": "string",
+              "description": "角色卡所在分类路径（可选；根目录省略）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameCharacterCategory",
+        "displayName": "%languageModelTools.renameCharacterCategory.displayName%",
+        "toolReferenceName": "renameCharacterCategory",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/pencil.svg",
+        "modelDescription": "重命名角色卡分类目录（可多级，oldName 用相对路径如 主角/配角，只改末级名），目录内角色卡与子分类随目录迁移。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "oldName": {
+              "type": "string",
+              "description": "原分类路径（可用末级分类名）"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新分类名"
+            }
+          },
+          "required": [
+            "oldName",
+            "newName"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteCharacterCategory",
+        "displayName": "%languageModelTools.deleteCharacterCategory.displayName%",
+        "toolReferenceName": "deleteCharacterCategory",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/trash.svg",
+        "modelDescription": "删除角色卡分类目录（可多级）及其下全部角色卡与子分类。删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "分类路径（可用末级分类名）"
             }
           },
           "required": [
@@ -1208,7 +1273,7 @@
         "toolReferenceName": "listWorldEntries",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/worldbook.svg",
-        "modelDescription": "列出一本书的全部世界书条目（世界书/ 下的 md 文件）。读取与编辑条目内容直接用文件工具即可。",
+        "modelDescription": "列出一本书的全部世界书条目（世界书/ 下，含分类子目录），按分类分组。读取与编辑条目内容直接用文件工具即可。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1225,7 +1290,7 @@
         "toolReferenceName": "createWorldEntry",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/add-world.svg",
-        "modelDescription": "在 世界书/ 下新建条目 md。同名文件已存在时不覆盖。",
+        "modelDescription": "在 世界书/ 下新建条目 md：可选分类（写入 世界书/分类/ 子目录，可多级，不存在则创建）。同名文件已存在时不覆盖。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1236,6 +1301,10 @@
             "name": {
               "type": "string",
               "description": "条目名称"
+            },
+            "category": {
+              "type": "string",
+              "description": "分类路径（可选，可多级如 地理/城邦；省略时放 世界书/ 根目录）"
             }
           },
           "required": [
@@ -1249,7 +1318,7 @@
         "toolReferenceName": "renameWorldEntry",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/pencil.svg",
-        "modelDescription": "重命名 世界书/ 下的条目 md。name 可用条目名称或文件名。",
+        "modelDescription": "重命名 世界书/ 下的条目 md。name 可用条目名称或文件名，category 指定所在分类（可多级，如 地理/城邦；省略时在 世界书/ 根目录查找）。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1264,6 +1333,10 @@
             "newName": {
               "type": "string",
               "description": "新条目名称"
+            },
+            "category": {
+              "type": "string",
+              "description": "条目所在分类路径（可选；根目录省略）"
             }
           },
           "required": [
@@ -1278,7 +1351,7 @@
         "toolReferenceName": "deleteWorldEntry",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/trash.svg",
-        "modelDescription": "删除 世界书/ 下的条目 md。name 为条目名称（不含扩展名）。删除前会向用户确认。",
+        "modelDescription": "删除 世界书/ 下的条目 md。name 为条目名称（不含扩展名），category 指定所在分类（可多级；省略时在 世界书/ 根目录查找）。删除前会向用户确认。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1289,6 +1362,63 @@
             "name": {
               "type": "string",
               "description": "条目名称"
+            },
+            "category": {
+              "type": "string",
+              "description": "条目所在分类路径（可选；根目录省略）"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "xReader_renameWorldCategory",
+        "displayName": "%languageModelTools.renameWorldCategory.displayName%",
+        "toolReferenceName": "renameWorldCategory",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/pencil.svg",
+        "modelDescription": "重命名世界书分类目录（可多级，oldName 用相对路径如 地理/城邦，只改末级名），目录内条目与子分类随目录迁移。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "oldName": {
+              "type": "string",
+              "description": "原分类路径（可用末级分类名）"
+            },
+            "newName": {
+              "type": "string",
+              "description": "新分类名"
+            }
+          },
+          "required": [
+            "oldName",
+            "newName"
+          ]
+        }
+      },
+      {
+        "name": "xReader_deleteWorldCategory",
+        "displayName": "%languageModelTools.deleteWorldCategory.displayName%",
+        "toolReferenceName": "deleteWorldCategory",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/trash.svg",
+        "modelDescription": "删除世界书分类目录（可多级）及其下全部条目与子分类。删除前会向用户确认。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "name": {
+              "type": "string",
+              "description": "分类路径（可用末级分类名）"
             }
           },
           "required": [
@@ -1337,11 +1467,6 @@
           "group": "navigation@3"
         },
         {
-          "command": "xReader.refreshBookshelf",
-          "when": "view == xReader.bookshelf",
-          "group": "navigation@4"
-        },
-        {
           "command": "xReader.newShelf",
           "when": "view == xReader.bookshelf && !xReader.noLibrary",
           "group": "shelf"
@@ -1349,7 +1474,7 @@
         {
           "command": "xReader.resetHistory",
           "when": "view == xReader.bookshelf && !xReader.noLibrary",
-          "group": "navigation@5"
+          "group": "navigation@4"
         },
         {
           "command": "xReader.newWorldEntry",
@@ -1474,14 +1599,34 @@
           "group": "inline@1"
         },
         {
-          "command": "xReader.renameNoteCategory",
-          "when": "view == xReader.notes && viewItem == noteCategory",
+          "command": "xReader.newWorldEntry",
+          "when": "view == xReader.worldbook && viewItem == entryCategory",
+          "group": "0_new"
+        },
+        {
+          "command": "xReader.newCharacterCard",
+          "when": "view == xReader.characters && viewItem == entryCategory",
+          "group": "0_new"
+        },
+        {
+          "command": "xReader.newNote",
+          "when": "view == xReader.notes && viewItem == entryCategory",
+          "group": "0_new"
+        },
+        {
+          "command": "xReader.newCategory",
+          "when": "view =~ /^xReader\\.(worldbook|characters|notes)$/ && viewItem == entryCategory",
           "group": "inline@1"
         },
         {
-          "command": "xReader.deleteNoteCategory",
-          "when": "view == xReader.notes && viewItem == noteCategory",
+          "command": "xReader.renameCategory",
+          "when": "view =~ /^xReader\\.(worldbook|characters|notes)$/ && viewItem == entryCategory",
           "group": "inline@2"
+        },
+        {
+          "command": "xReader.deleteCategory",
+          "when": "view =~ /^xReader\\.(worldbook|characters|notes)$/ && viewItem == entryCategory",
+          "group": "inline@3"
         },
         {
           "command": "xReader.renameBook",
@@ -1505,12 +1650,7 @@
         },
         {
           "command": "xReader.renameEntry",
-          "when": "view == xReader.worldbook && viewItem == entry",
-          "group": "inline@1"
-        },
-        {
-          "command": "xReader.renameEntry",
-          "when": "view == xReader.characters && viewItem == entry",
+          "when": "view =~ /^xReader\\.(worldbook|characters)$/ && viewItem == entry",
           "group": "inline@1"
         },
         {
@@ -1520,17 +1660,7 @@
         },
         {
           "command": "xReader.deleteEntry",
-          "when": "view == xReader.worldbook && viewItem == entry",
-          "group": "inline@2"
-        },
-        {
-          "command": "xReader.deleteEntry",
-          "when": "view == xReader.characters && viewItem == entry",
-          "group": "inline@2"
-        },
-        {
-          "command": "xReader.deleteEntry",
-          "when": "view == xReader.notes && viewItem == note",
+          "when": "view =~ /^xReader\\.(worldbook|characters|notes)$/ && viewItem =~ /^(entry|note)$/",
           "group": "inline@2"
         }
       ],

@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, SummaryState } from './model/book';
+import type { BookInfo, ChapterFile, ChapterVolume, EntryCategory, EntryFile, SummaryState } from './model/book';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -136,19 +136,107 @@ async function requireEntry(
 	throw new Error(vscode.l10n.t(notFoundTemplate, ref, listOrEmpty(existing.map((e) => e.name))));
 }
 
-/** 笔记所在子目录（未指定分类时为 笔记/ 根）；分类不存在时抛错。 */
-async function resolveNoteDir(library: LibraryService, book: BookInfo, category?: string): Promise<string> {
+/** 条目所在子目录（世界书/角色卡/笔记通用；未指定分类时为条目根目录）；分类不存在时抛错。 */
+async function resolveEntryDir(
+	library: LibraryService,
+	book: BookInfo,
+	rootDir: string,
+	category?: string
+): Promise<string> {
 	if (!category) {
-		return NOTES_DIR;
+		return rootDir;
 	}
-	const categories = await library.listNoteCategories(book);
-	const found = categories.find((c) => c.dirName === category || c.name === category);
-	if (!found) {
+	const found = await requireCategory(library, book, rootDir, category);
+	return `${rootDir}/${found.path}`;
+}
+
+/** 按引用取分类（世界书/角色卡/笔记通用，可用分类路径或唯一的末级名）；找不到或有歧义时抛错。 */
+async function requireCategory(
+	library: LibraryService,
+	book: BookInfo,
+	subDir: string,
+	ref: string
+): Promise<EntryCategory> {
+	const categories = await library.listCategories(book, subDir);
+	const byPath = categories.find((c) => c.path === ref);
+	if (byPath) {
+		return byPath;
+	}
+	// 末级名（如「配角」）在多级下可能重名，仅在唯一时采用
+	const byName = categories.filter((c) => c.name === ref);
+	if (byName.length > 1) {
 		throw new Error(
-			vscode.l10n.t('Note category “{0}” not found. Existing: {1}', category, listOrNone(categories.map((c) => c.name)))
+			vscode.l10n.t('Category “{0}” is ambiguous. Use its full path, e.g. {1}.', ref, byName[0].path)
 		);
 	}
-	return `${NOTES_DIR}/${found.dirName}`;
+	if (byName.length === 1) {
+		return byName[0];
+	}
+	throw new Error(
+		vscode.l10n.t('Category “{0}” not found. Existing: {1}', ref, listOrNone(categories.map((c) => c.path)))
+	);
+}
+
+/** 条目按分类分组的清单行（分类标题 + 该分类下条目，最后是根目录条目）；lineOf 定制每行文本。 */
+async function listEntriesGrouped(
+	library: LibraryService,
+	book: BookInfo,
+	subDir: string,
+	lineOf: (relPath: string, name: string) => Promise<string>
+): Promise<string[]> {
+	const lines: string[] = [];
+	for (const category of await library.listCategories(book, subDir)) {
+		lines.push(`【分类：${category.path}】`);
+		const entries = await library.listEntries(book, subDir, category.path);
+		lines.push(
+			...(await Promise.all(entries.map((entry) => lineOf(`${subDir}/${category.path}/${entry.fileName}`, entry.name))))
+		);
+	}
+	const rootEntries = await library.listEntries(book, subDir);
+	lines.push(...(await Promise.all(rootEntries.map((entry) => lineOf(`${subDir}/${entry.fileName}`, entry.name)))));
+	return lines;
+}
+
+/** 注册某条目根目录的分类重命名/删除工具（世界书/角色卡/笔记 三处同构，仅目录与措辞不同）。 */
+function registerEntryCategoryTools(
+	context: vscode.ExtensionContext,
+	library: LibraryService,
+	options: { rootDir: string; noun: string; renameTool: string; deleteTool: string }
+): void {
+	context.subscriptions.push(
+		vscode.lm.registerTool<BookInput & { oldName: string; newName: string }>(options.renameTool, {
+			async invoke(input) {
+				const book = await resolveBook(library, input.input.book);
+				const category = await requireCategory(library, book, options.rootDir, input.input.oldName);
+				const target = await library.renameCategory(book, options.rootDir, category.path, input.input.newName);
+				return text(`已将${options.noun}分类「${category.path}」重命名为「${target}」。`);
+			},
+			prepareInvocation: (input) => ({
+				invocationMessage: vscode.l10n.t(
+					'Rename category “{0}” to “{1}”',
+					input.input.oldName,
+					input.input.newName
+				),
+			}),
+		}),
+		vscode.lm.registerTool<BookInput & { name: string }>(options.deleteTool, {
+			async invoke(input) {
+				const book = await resolveBook(library, input.input.book);
+				const category = await requireCategory(library, book, options.rootDir, input.input.name);
+				await library.deleteCategory(book, options.rootDir, category.path);
+				return text(`已删除${options.noun}分类「${category.path}」及其全部内容。`);
+			},
+			prepareInvocation: (input) => ({
+				invocationMessage: vscode.l10n.t('Delete category “{0}”', input.input.name),
+				confirmationMessages: {
+					title: vscode.l10n.t('Delete Category'),
+					message: new vscode.MarkdownString(
+						vscode.l10n.t('Delete category “{0}” and all its entries?', input.input.name)
+					),
+				},
+			}),
+		})
+	);
 }
 
 /** 按引用取笔记；找不到时抛错（category 仅用于错误提示）。 */
@@ -611,27 +699,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput>('xReader_listNotes', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const [categories, rootNotes] = await Promise.all([
-					library.listNoteCategories(book),
-					library.listNotes(book),
-				]);
 				const noteLine = async (relPath: string, name: string): Promise<string> => {
 					const link = await noteChapterLink(path.join(book.dir, relPath));
 					return `${relPath}｜${name}${link ? `｜关联章节：${link}` : ''}`;
 				};
-				const lines: string[] = [];
-				for (const category of categories) {
-					lines.push(`【分类：${category.name}】`);
-					const notes = await library.listNotes(book, category.dirName);
-					lines.push(
-						...(await Promise.all(
-							notes.map((note) => noteLine(`${NOTES_DIR}/${category.dirName}/${note.fileName}`, note.name))
-						))
-					);
-				}
-				lines.push(
-					...(await Promise.all(rootNotes.map((note) => noteLine(`${NOTES_DIR}/${note.fileName}`, note.name))))
-				);
+				const lines = await listEntriesGrouped(library, book, NOTES_DIR, noteLine);
 				return text(
 					lines.length === 0
 						? `《${book.name}》还没有笔记。`
@@ -639,38 +711,6 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				);
 			},
 			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Notes') }),
-		}),
-
-		vscode.lm.registerTool<BookInput & { oldName: string; newName: string }>('xReader_renameNoteCategory', {
-			async invoke(options) {
-				const book = await resolveBook(library, options.input.book);
-				const target = await library.renameNoteCategory(book, options.input.oldName, options.input.newName);
-				return text(`已将笔记分类「${options.input.oldName}」重命名为「${target}」。`);
-			},
-			prepareInvocation: (options) => ({
-				invocationMessage: vscode.l10n.t(
-					'Rename note category “{0}” to “{1}”',
-					options.input.oldName,
-					options.input.newName
-				),
-			}),
-		}),
-
-		vscode.lm.registerTool<BookInput & { name: string }>('xReader_deleteNoteCategory', {
-			async invoke(options) {
-				const book = await resolveBook(library, options.input.book);
-				await library.deleteNoteCategory(book, options.input.name);
-				return text(`已删除笔记分类「${options.input.name}」。`);
-			},
-			prepareInvocation: (options) => ({
-				invocationMessage: vscode.l10n.t('Delete note category “{0}”', options.input.name),
-				confirmationMessages: {
-					title: vscode.l10n.t('Delete Note Category'),
-					message: new vscode.MarkdownString(
-						vscode.l10n.t('Delete note category “{0}” and all its notes?', options.input.name)
-					),
-				},
-			}),
 		}),
 
 		vscode.lm.registerTool<BookInput & { name: string; category?: string; chapter?: string }>('xReader_createNote', {
@@ -704,20 +744,30 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput>('xReader_listCharacters', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const entries = await library.listEntries(book, CARDS_DIR);
+				const lines = await listEntriesGrouped(
+					library,
+					book,
+					CARDS_DIR,
+					async (relPath, name) => `${relPath}｜${name}`
+				);
 				return text(
-					entries.length === 0
+					lines.length === 0
 						? `《${book.name}》还没有角色卡。`
-						: `《${book.name}》角色卡：\n${entries.map((e) => `${CARDS_DIR}/${e.fileName}`).join('\n')}`
+						: `《${book.name}》角色卡（相对路径｜名称）：\n${lines.join('\n')}`
 				);
 			},
 			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List Characters') }),
 		}),
 
-		vscode.lm.registerTool<BookInput & { name: string }>('xReader_createCharacter', {
+		vscode.lm.registerTool<BookInput & { name: string; category?: string }>('xReader_createCharacter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const filePath = await library.createEntry(book, CARDS_DIR, options.input.name);
+				const filePath = await library.createEntry(
+					book,
+					CARDS_DIR,
+					options.input.name,
+					options.input.category?.trim() || undefined
+				);
 				return text(`角色卡已就绪：${filePath}。`);
 			},
 			prepareInvocation: (options) => ({
@@ -728,20 +778,30 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 		vscode.lm.registerTool<BookInput>('xReader_listWorldEntries', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const entries = await library.listEntries(book, WORLD_DIR);
+				const lines = await listEntriesGrouped(
+					library,
+					book,
+					WORLD_DIR,
+					async (relPath, name) => `${relPath}｜${name}`
+				);
 				return text(
-					entries.length === 0
+					lines.length === 0
 						? `《${book.name}》还没有世界书条目。`
-						: `《${book.name}》世界书条目：\n${entries.map((e) => `${WORLD_DIR}/${e.fileName}`).join('\n')}`
+						: `《${book.name}》世界书条目（相对路径｜名称）：\n${lines.join('\n')}`
 				);
 			},
 			prepareInvocation: () => ({ invocationMessage: vscode.l10n.t('List World Entries') }),
 		}),
 
-		vscode.lm.registerTool<BookInput & { name: string }>('xReader_createWorldEntry', {
+		vscode.lm.registerTool<BookInput & { name: string; category?: string }>('xReader_createWorldEntry', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
-				const filePath = await library.createEntry(book, WORLD_DIR, options.input.name);
+				const filePath = await library.createEntry(
+					book,
+					WORLD_DIR,
+					options.input.name,
+					options.input.category?.trim() || undefined
+				);
 				return text(`世界书条目已就绪：${filePath}。`);
 			},
 			prepareInvocation: (options) => ({
@@ -787,7 +847,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const category = options.input.category?.trim();
-				const subDir = await resolveNoteDir(library, book, category);
+				const subDir = await resolveEntryDir(library, book, NOTES_DIR, category);
 				const note = await requireNote(library, book, subDir, options.input.name, category);
 				await library.removeEntry(book, subDir, note.fileName);
 				return text(`已删除笔记「${note.name}」${category ? `（分类：${category}）` : ''}。`);
@@ -811,7 +871,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
 				const category = options.input.category?.trim();
-				const subDir = await resolveNoteDir(library, book, category);
+				const subDir = await resolveEntryDir(library, book, NOTES_DIR, category);
 				const note = await requireNote(library, book, subDir, options.input.name, category);
 				const newFileName = await library.renameEntry(book, subDir, note.fileName, options.input.newName);
 				return text(`已重命名笔记：${subDir}/${newFileName}。`);
@@ -825,17 +885,18 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			}),
 		}),
 
-		vscode.lm.registerTool<BookInput & { name: string }>('xReader_deleteCharacter', {
+		vscode.lm.registerTool<BookInput & { name: string; category?: string }>('xReader_deleteCharacter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
+				const subDir = await resolveEntryDir(library, book, CARDS_DIR, options.input.category?.trim());
 				const found = await requireEntry(
 					library,
 					book,
-					CARDS_DIR,
+					subDir,
 					options.input.name,
 					'Character card “{0}” not found. Existing: {1}'
 				);
-				await library.removeEntry(book, CARDS_DIR, found.fileName);
+				await library.removeEntry(book, subDir, found.fileName);
 				return text(`已删除角色卡「${found.name}」。`);
 			},
 			prepareInvocation: (options) => ({
@@ -847,18 +908,19 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			}),
 		}),
 
-		vscode.lm.registerTool<BookInput & { name: string; newName: string }>('xReader_renameCharacter', {
+		vscode.lm.registerTool<BookInput & { name: string; newName: string; category?: string }>('xReader_renameCharacter', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
+				const subDir = await resolveEntryDir(library, book, CARDS_DIR, options.input.category?.trim());
 				const found = await requireEntry(
 					library,
 					book,
-					CARDS_DIR,
+					subDir,
 					options.input.name,
 					'Character card “{0}” not found. Existing: {1}'
 				);
-				const newFileName = await library.renameEntry(book, CARDS_DIR, found.fileName, options.input.newName);
-				return text(`已重命名角色卡：${CARDS_DIR}/${newFileName}。`);
+				const newFileName = await library.renameEntry(book, subDir, found.fileName, options.input.newName);
+				return text(`已重命名角色卡：${subDir}/${newFileName}。`);
 			},
 			prepareInvocation: (options) => ({
 				invocationMessage: vscode.l10n.t(
@@ -869,17 +931,18 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			}),
 		}),
 
-		vscode.lm.registerTool<BookInput & { name: string }>('xReader_deleteWorldEntry', {
+		vscode.lm.registerTool<BookInput & { name: string; category?: string }>('xReader_deleteWorldEntry', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
+				const subDir = await resolveEntryDir(library, book, WORLD_DIR, options.input.category?.trim());
 				const found = await requireEntry(
 					library,
 					book,
-					WORLD_DIR,
+					subDir,
 					options.input.name,
 					'World entry “{0}” not found. Existing: {1}'
 				);
-				await library.removeEntry(book, WORLD_DIR, found.fileName);
+				await library.removeEntry(book, subDir, found.fileName);
 				return text(`已删除世界书条目「${found.name}」。`);
 			},
 			prepareInvocation: (options) => ({
@@ -891,18 +954,19 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			}),
 		}),
 
-		vscode.lm.registerTool<BookInput & { name: string; newName: string }>('xReader_renameWorldEntry', {
+		vscode.lm.registerTool<BookInput & { name: string; newName: string; category?: string }>('xReader_renameWorldEntry', {
 			async invoke(options) {
 				const book = await resolveBook(library, options.input.book);
+				const subDir = await resolveEntryDir(library, book, WORLD_DIR, options.input.category?.trim());
 				const found = await requireEntry(
 					library,
 					book,
-					WORLD_DIR,
+					subDir,
 					options.input.name,
 					'World entry “{0}” not found. Existing: {1}'
 				);
-				const newFileName = await library.renameEntry(book, WORLD_DIR, found.fileName, options.input.newName);
-				return text(`已重命名世界书条目：${WORLD_DIR}/${newFileName}。`);
+				const newFileName = await library.renameEntry(book, subDir, found.fileName, options.input.newName);
+				return text(`已重命名世界书条目：${subDir}/${newFileName}。`);
 			},
 			prepareInvocation: (options) => ({
 				invocationMessage: vscode.l10n.t(
@@ -913,4 +977,24 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 			}),
 		})
 	);
+
+	// 分类维护：世界书/角色卡/笔记 三处同构，统一表驱动注册
+	const categoryToolSets = [
+		{ rootDir: NOTES_DIR, noun: '笔记', renameTool: 'xReader_renameNoteCategory', deleteTool: 'xReader_deleteNoteCategory' },
+		{
+			rootDir: CARDS_DIR,
+			noun: '角色卡',
+			renameTool: 'xReader_renameCharacterCategory',
+			deleteTool: 'xReader_deleteCharacterCategory',
+		},
+		{
+			rootDir: WORLD_DIR,
+			noun: '世界书',
+			renameTool: 'xReader_renameWorldCategory',
+			deleteTool: 'xReader_deleteWorldCategory',
+		},
+	];
+	for (const options of categoryToolSets) {
+		registerEntryCategoryTools(context, library, options);
+	}
 }

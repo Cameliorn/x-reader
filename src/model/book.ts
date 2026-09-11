@@ -48,12 +48,20 @@ export interface ChapterVolume {
 	chapters: ChapterFile[];
 }
 
-/** 条目文件：世界书/角色卡 目录下的 md 文件。 */
+/** 条目文件：世界书/角色卡/笔记 目录下的 md 文件。 */
 export interface EntryFile {
 	/** 条目名（文件名去扩展名） */
 	name: string;
 	/** 文件名 */
 	fileName: string;
+}
+
+/** 条目分类：世界书/角色卡/笔记 下的子目录，可多级嵌套（路径用 / 连接）。 */
+export interface EntryCategory {
+	/** 分类名（末级目录名） */
+	name: string;
+	/** 相对条目根目录的路径，如 人物/家族 */
+	path: string;
 }
 
 /** 摘要维护状态：未创建 / 最新 / 待维护（摘要创建后章节又有改动）。 */
@@ -71,18 +79,4 @@ export interface IntervalSummary {
 	chapters: ChapterFile[];
 	/** 摘要状态：区间内任一章节比摘要文件更新的即为待维护 */
 	state: SummaryState;
-}
-
-/** 笔记分类：笔记/ 下的子目录。 */
-export interface NoteCategory {
-	/** 分类名（即目录名） */
-	name: string;
-	/** 目录名 */
-	dirName: string;
-}
-
-/** 笔记文件：笔记/ 或分类子目录下的 md 文件。 */
-export interface NoteFile extends EntryFile {
-	/** 所在分类目录名；undefined 表示笔记根目录（未分类） */
-	categoryDir?: string;
 }

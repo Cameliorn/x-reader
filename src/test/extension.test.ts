@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { execFile } from 'child_process';
 import * as fs from 'fs/promises';
 import * as iconv from 'iconv-lite';
 import * as os from 'os';
@@ -14,6 +15,7 @@ import {
 	NOTES_DIR,
 	WORLD_DIR,
 } from '../services/bookFactory';
+import { commitAll, resetHistory } from '../services/git';
 import { chapterRelPath, LibraryService, parseChapterFilePath } from '../services/library';
 import {
 	buildChapterMarkdown,
@@ -33,6 +35,30 @@ import {
 	updateChapterNav,
 } from '../services/markdown';
 import { decodeBuffer, parseChapters } from '../services/novelParser';
+
+/** 文件是否存在。 */
+const exists = async (p: string): Promise<boolean> => fs.access(p).then(() => true, () => false);
+
+/** 构造只带内存 globalState 的 LibraryService（测试不依赖 VS Code 宿主）。 */
+const makeService = (): LibraryService => {
+	const store = new Map<string, unknown>();
+	const fakeContext = {
+		globalState: {
+			get: (key: string, fallback?: unknown) => (store.has(key) ? store.get(key) : fallback),
+			update: async (key: string, value: unknown) => {
+				if (value === undefined) {
+					store.delete(key);
+				} else {
+					store.set(key, value);
+				}
+			},
+			keys: () => [...store.keys()],
+			setKeysForSync: () => undefined,
+		},
+		subscriptions: [] as vscode.Disposable[],
+	} as unknown as vscode.ExtensionContext;
+	return new LibraryService(fakeContext);
+};
 
 suite('markdown helpers', () => {
 	test('sanitizeFileTitle 去除非法字符、压缩空白并截断', () => {
@@ -140,9 +166,9 @@ suite('markdown helpers', () => {
 		assert.strictEqual(text.split('\n')[meta.fields[0].line], 'title: "雨夜"');
 		assert.deepStrictEqual(
 			meta.sections.map((s) => s.title),
-			['简介', '写作要求']
+			['简介', '说明']
 		);
-		assert.strictEqual(text.split('\n')[meta.sections[1].line], '## 写作要求');
+		assert.strictEqual(text.split('\n')[meta.sections[1].line], '## 说明');
 	});
 
 	test('parseBookMetadata 处理引号转义、手写键名与三级标题', () => {
@@ -163,7 +189,7 @@ suite('markdown helpers', () => {
 				'',
 				'### 子标题',
 				'细节',
-				'## 写作要求',
+				'## 说明',
 				'',
 				'禁止上帝视角',
 				'',
@@ -179,7 +205,7 @@ suite('markdown helpers', () => {
 		);
 		assert.deepStrictEqual(meta.sections, [
 			{ title: '简介', body: '第一行\n第二行\n\n### 子标题\n细节', line: 8 },
-			{ title: '写作要求', body: '禁止上帝视角', line: 15 },
+			{ title: '说明', body: '禁止上帝视角', line: 15 },
 		]);
 		assert.deepStrictEqual(parseBookMetadata(''), { fields: [], sections: [] });
 		assert.deepStrictEqual(parseBookMetadata('# 只有标题'), { fields: [], sections: [] });
@@ -410,7 +436,7 @@ suite('createBookFromText', () => {
 			const dir = first.book.dir;
 			const meta = await fs.readFile(path.join(dir, META_FILE), 'utf8');
 			assert.ok(meta.includes('title: "测试书"'));
-			assert.ok(meta.includes('## 写作要求'));
+			assert.ok(meta.includes('## 说明'));
 			for (const sub of [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR]) {
 				await fs.access(path.join(dir, sub, '.gitkeep'));
 			}
@@ -504,28 +530,6 @@ test('updateChapterNav 替换/移除导航链接，空导航段清理', () => {
 });
 
 suite('LibraryService 写操作', () => {
-	const exists = async (p: string): Promise<boolean> => fs.access(p).then(() => true, () => false);
-
-	const makeService = (): LibraryService => {
-		const store = new Map<string, unknown>();
-		const fakeContext = {
-			globalState: {
-				get: (key: string, fallback?: unknown) => (store.has(key) ? store.get(key) : fallback),
-				update: async (key: string, value: unknown) => {
-					if (value === undefined) {
-						store.delete(key);
-					} else {
-						store.set(key, value);
-					}
-				},
-				keys: () => [...store.keys()],
-				setKeysForSync: () => undefined,
-			},
-			subscriptions: [] as vscode.Disposable[],
-		} as unknown as vscode.ExtensionContext;
-		return new LibraryService(fakeContext);
-	};
-
 	const THREE_CHAPTER_TEXT = ['# 第一卷', '## 第1章 甲', '正文甲', '## 第2章 乙', '正文乙', '## 第3章 丙', '正文丙'].join('\n');
 	const TWO_VOLUME_TEXT = ['# 第一卷', '## 第1章 甲', '正文甲', '# 第二卷', '## 第2章 乙', '正文乙'].join('\n');
 
@@ -922,6 +926,188 @@ suite('LibraryService 写操作', () => {
 			assert.strictEqual(service.getCurrentBook()?.dir, renamed.dir);
 			assert.strictEqual(service.getProgress(renamed.dir), chapterRelPath(chapters[0]));
 			assert.strictEqual(service.getProgress(book.dir), undefined);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('条目分类（世界书/角色卡/笔记）', () => {
+	const BOOK_TEXT = ['# 第一卷', '## 第1章 甲', '正文甲', '## 第2章 乙', '正文乙'].join('\n');
+
+	test('createEntry/createCategory 支持多级分类，listCategories 递归展开', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+
+			// 建条目时按 / 逐级创建分类
+			const entry = await service.createEntry(book, WORLD_DIR, '王城', '地理/城邦');
+			assert.strictEqual(path.relative(book.dir, entry), path.join(WORLD_DIR, '地理', '城邦', '王城.md'));
+
+			// 显式新建空分类（含占位文件以便 git 跟踪）
+			await service.createCategory(book, CARDS_DIR, '主角/配角');
+			assert.ok(await exists(path.join(book.dir, CARDS_DIR, '主角', '配角', '.gitkeep')));
+
+			assert.deepStrictEqual(
+				(await service.listCategories(book, WORLD_DIR)).map((c) => c.path),
+				['地理', '地理/城邦']
+			);
+			assert.deepStrictEqual(
+				(await service.listChildCategories(book, WORLD_DIR)).map((c) => c.path),
+				['地理']
+			);
+			assert.deepStrictEqual(
+				(await service.listChildCategories(book, WORLD_DIR, '地理')).map((c) => c.path),
+				['地理/城邦']
+			);
+			// listEntries 只列所在层
+			assert.deepStrictEqual(
+				(await service.listEntries(book, WORLD_DIR, '地理/城邦')).map((e) => e.name),
+				['王城']
+			);
+			assert.deepStrictEqual(await service.listEntries(book, WORLD_DIR), []);
+			// 同名分类重复创建时报错
+			await assert.rejects(() => service.createCategory(book, CARDS_DIR, '主角'));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('renameCategory 只改末级名并保留父路径，deleteCategory 递归删除', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			await service.createEntry(book, CARDS_DIR, '林晚', '主角/配角');
+			await service.createEntry(book, CARDS_DIR, '林晚的师父', '主角');
+
+			const target = await service.renameCategory(book, CARDS_DIR, '主角/配角', '重要配角');
+
+			assert.strictEqual(target, '主角/重要配角');
+			assert.ok(await exists(path.join(book.dir, CARDS_DIR, '主角', '重要配角', '林晚.md')));
+			assert.ok(!(await exists(path.join(book.dir, CARDS_DIR, '主角', '配角'))));
+
+			await service.deleteCategory(book, CARDS_DIR, '主角');
+			assert.ok(!(await exists(path.join(book.dir, CARDS_DIR, '主角'))));
+			assert.deepStrictEqual(await service.listCategories(book, CARDS_DIR), []);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('renameCategory 改父分类名时子分类路径同步变化', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			await service.createEntry(book, WORLD_DIR, '王城', '地理/城邦');
+
+			await service.renameCategory(book, WORLD_DIR, '地理', '地理设定');
+
+			assert.deepStrictEqual(
+				(await service.listCategories(book, WORLD_DIR)).map((c) => c.path),
+				['地理设定', '地理设定/城邦']
+			);
+			assert.ok(await exists(path.join(book.dir, WORLD_DIR, '地理设定', '城邦', '王城.md')));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('嵌套分类笔记的章节关联链接按层级计算，章节改名后同步更新', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const chapter = (await service.listChapters(book))[0];
+
+			const notePath = await service.createNote(book, '支线想法', '剧情/支线', chapter);
+			const noteMd = await fs.readFile(notePath, 'utf8');
+			assert.ok(noteMd.includes('chapter: "第一卷/'));
+			assert.ok(noteMd.includes(`(<../../../${CHAPTERS_DIR}/第一卷/${chapter.fileName}>)`));
+
+			const newFileName = await service.renameChapter(book, chapter, '第1章 新甲');
+
+			const updated = await fs.readFile(notePath, 'utf8');
+			assert.ok(updated.includes(`(<../../../${CHAPTERS_DIR}/第一卷/${newFileName}>)`));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('git 服务', () => {
+	/** 执行真实 git；git 不可用时返回 undefined（测试随之跳过）。 */
+	const git = (cwd: string, args: string[]): Promise<string | undefined> =>
+		new Promise((resolve) => {
+			execFile('git', args, { cwd, encoding: 'utf8' }, (error, stdout) => resolve(error ? undefined : stdout.trim()));
+		});
+
+	test('git 输出很大时提交不被误判为失败（大书库逐文件 create mode 输出）', async () => {
+		// 假 git 脚本依赖 sh
+		if (process.platform === 'win32') {
+			return;
+		}
+		const binDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-fakegit-'));
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-git-'));
+		const prevPath = process.env.PATH;
+		try {
+			// commit 输出 2MB，超出 Node execFile 默认 1MB 缓冲
+			const script = [
+				'#!/bin/sh',
+				'case "$1 $2" in',
+				'  "rev-parse --is-inside-work-tree") echo true ;;',
+				'  "config user.name") echo tester ;;',
+				'  "commit "*) head -c 2097152 /dev/zero | tr "\\0" x ;;',
+				'esac',
+				'exit 0',
+			].join('\n');
+			await fs.writeFile(path.join(binDir, 'git'), script, { mode: 0o755 });
+			process.env.PATH = `${binDir}${path.delimiter}${prevPath ?? ''}`;
+			assert.strictEqual(await commitAll(root, '大书库快照'), true);
+		} finally {
+			process.env.PATH = prevPath;
+			await fs.rm(binDir, { recursive: true, force: true });
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('resetHistory 非仓库目录下重建成功', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-git-'));
+		try {
+			if ((await git(root, ['--version'])) === undefined) {
+				return;
+			}
+			await fs.writeFile(path.join(root, 'a.md'), 'a');
+			assert.deepStrictEqual(await resetHistory(root, '重建仓库'), { ok: true });
+			assert.ok((await git(root, ['log', '--oneline'])) !== undefined);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('resetHistory 在库目录位于其他仓库内部时按原因拒绝', async () => {
+		const outer = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-git-'));
+		try {
+			if ((await git(outer, ['--version'])) === undefined) {
+				return;
+			}
+			const inner = path.join(outer, 'books');
+			await fs.mkdir(inner, { recursive: true });
+			await fs.writeFile(path.join(inner, 'a.md'), 'a');
+			await git(outer, ['init']);
+			assert.deepStrictEqual(await resetHistory(inner, '重建仓库'), { ok: false, reason: 'nested-repo' });
+		} finally {
+			await fs.rm(outer, { recursive: true, force: true });
+		}
+	});
+
+	test('resetHistory 在 .git 是文件时按原因拒绝', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-git-'));
+		try {
+			await fs.writeFile(path.join(root, '.git'), 'gitdir: /nonexistent');
+			assert.deepStrictEqual(await resetHistory(root, '重建仓库'), { ok: false, reason: 'gitnotdir' });
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}

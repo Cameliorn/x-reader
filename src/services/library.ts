@@ -2,7 +2,7 @@ import type { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, ChapterVolume, EntryFile, IntervalSummary, NoteCategory, NoteFile, Shelf, SummaryState } from '../model/book';
+import type { BookInfo, ChapterFile, ChapterVolume, EntryCategory, EntryFile, IntervalSummary, Shelf, SummaryState } from '../model/book';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -68,6 +68,16 @@ const EMPTY_SUBDIRS = [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUM
 /** 章节在 章节/ 下的相对路径（分卷含目录名），用作进度键。 */
 export function chapterRelPath(chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): string {
 	return chapter.volumeDir ? `${chapter.volumeDir}/${chapter.fileName}` : chapter.fileName;
+}
+
+/** 清洗分类相对路径：按 / 拆段逐段清洗，去掉空段（可多级嵌套）；无有效段时返回 undefined。 */
+function sanitizeCategoryPath(raw: string): string | undefined {
+	const segments = raw
+		.split(/[/\\]+/)
+		.map((segment) => segment.trim())
+		.filter((segment) => segment.length > 0)
+		.map((segment) => sanitizeFileTitle(segment));
+	return segments.length > 0 ? segments.join('/') : undefined;
 }
 
 /** 章节文件的路径构成（书目录 + 分卷 + 文件名）。 */
@@ -683,11 +693,11 @@ export class LibraryService {
 		await this.commitAndRefresh(`删除章节版本 ${chapterRelPath(chapter)} · ${versionName}`);
 	}
 
-	/** 世界书/角色卡 目录下的条目 md 文件列表（忽略 .gitkeep 等非 md 文件）。 */
-	async listEntries(book: BookInfo, subDir: string): Promise<EntryFile[]> {
+	/** 条目目录（世界书/角色卡/笔记，可含分类路径）下的 md 文件列表（忽略 .gitkeep 等非 md 文件）。 */
+	async listEntries(book: BookInfo, subDir: string, categoryPath?: string): Promise<EntryFile[]> {
 		let entries: string[];
 		try {
-			entries = await fs.readdir(path.join(book.dir, subDir));
+			entries = await fs.readdir(path.join(book.dir, subDir, categoryPath ?? ''));
 		} catch {
 			return [];
 		}
@@ -695,6 +705,80 @@ export class LibraryService {
 			.filter((fileName) => fileName.endsWith('.md'))
 			.map((fileName) => ({ name: fileName.replace(/\.md$/, ''), fileName }))
 			.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	/** 读取目录下的直接子目录名（不存在时为空）。 */
+	private async readSubDirNames(dir: string): Promise<string[]> {
+		try {
+			return (await fs.readdir(dir, { withFileTypes: true }))
+				.filter((entry) => entry.isDirectory())
+				.map((entry) => entry.name)
+				.sort((a, b) => a.localeCompare(b));
+		} catch {
+			return [];
+		}
+	}
+
+	/** 某个分类（或条目根目录）下的直接子分类。 */
+	async listChildCategories(book: BookInfo, subDir: string, categoryPath?: string): Promise<EntryCategory[]> {
+		const names = await this.readSubDirNames(path.join(book.dir, subDir, categoryPath ?? ''));
+		return names.map((name) => ({ name, path: categoryPath ? `${categoryPath}/${name}` : name }));
+	}
+
+	/** 条目根目录下的全部分类（递归展开多级，按路径排序）。 */
+	async listCategories(book: BookInfo, subDir: string, categoryPath?: string): Promise<EntryCategory[]> {
+		const children = await this.listChildCategories(book, subDir, categoryPath);
+		const nested = await Promise.all(children.map((child) => this.listCategories(book, subDir, child.path)));
+		// 保持深度优先顺序：父分类紧跟其子分类，再排兄弟分类
+		return children.flatMap((child, index) => [child, ...nested[index]]);
+	}
+
+	/** 新建分类目录（可多级）并提交 git 快照，返回清洗后的相对路径。 */
+	async createCategory(book: BookInfo, subDir: string, categoryPath: string): Promise<string> {
+		const safePath = sanitizeCategoryPath(categoryPath);
+		if (!safePath) {
+			throw new Error('分类名不能为空');
+		}
+		const dir = path.join(book.dir, subDir, safePath);
+		if (await pathExists(dir)) {
+			throw new Error(`分类「${safePath}」已存在`);
+		}
+		await fs.mkdir(dir, { recursive: true });
+		// 空目录不被 git 跟踪，放占位文件纳入快照
+		await fs.writeFile(path.join(dir, '.gitkeep'), '', 'utf8');
+		await this.commitAndRefresh(`新建分类 ${subDir}/${safePath}`);
+		return safePath;
+	}
+
+	/** 重命名分类目录（只改末级名，内容随目录迁移），返回新的相对路径。 */
+	async renameCategory(
+		book: BookInfo,
+		subDir: string,
+		categoryPath: string,
+		newName: string
+	): Promise<string> {
+		const parent = categoryPath.includes('/') ? categoryPath.slice(0, categoryPath.lastIndexOf('/')) : '';
+		const targetPath = parent ? `${parent}/${sanitizeFileTitle(newName)}` : sanitizeFileTitle(newName);
+		if (targetPath === categoryPath) {
+			return targetPath;
+		}
+		const oldDir = path.join(book.dir, subDir, categoryPath);
+		const newDir = path.join(book.dir, subDir, targetPath);
+		if (!(await pathExists(oldDir))) {
+			throw new Error(`分类「${categoryPath}」不存在`);
+		}
+		if (await pathExists(newDir)) {
+			throw new Error(`分类「${targetPath}」已存在`);
+		}
+		await vscode.workspace.fs.rename(vscode.Uri.file(oldDir), vscode.Uri.file(newDir));
+		await this.commitAndRefresh(`重命名分类 ${subDir}/${categoryPath} → ${targetPath}`);
+		return targetPath;
+	}
+
+	/** 删除分类目录（含其中全部条目与子分类）并提交 git 快照。 */
+	async deleteCategory(book: BookInfo, subDir: string, categoryPath: string): Promise<void> {
+		await fs.rm(path.join(book.dir, subDir, categoryPath), { recursive: true, force: true });
+		await this.commitAndRefresh(`删除分类 ${subDir}/${categoryPath}`);
 	}
 
 	/** 读取 元数据.md 并解析；文件缺失时返回 undefined。 */
@@ -768,14 +852,15 @@ export class LibraryService {
 		this._onDidChange.fire();
 	}
 
-	/** 在 世界书/ 或 角色卡/ 下新建条目 md（已存在则不覆盖），返回文件路径。 */
-	async createEntry(book: BookInfo, subDir: string, name: string): Promise<string> {
-		const dir = path.join(book.dir, subDir);
+	/** 在 世界书/角色卡/笔记 下新建条目 md（分类目录不存在则创建，已存在同名文件则不覆盖），返回文件路径。 */
+	async createEntry(book: BookInfo, subDir: string, name: string, categoryPath?: string): Promise<string> {
+		const safeCategory = categoryPath ? sanitizeCategoryPath(categoryPath) : undefined;
+		const dir = path.join(book.dir, subDir, safeCategory ?? '');
 		await fs.mkdir(dir, { recursive: true });
 		const filePath = path.join(dir, `${sanitizeFileTitle(name)}.md`);
 		if (!(await pathExists(filePath))) {
 			await fs.writeFile(filePath, buildEntryMarkdown(name), 'utf8');
-			await this.commit(`新建 ${subDir}/${path.basename(filePath)}`);
+			await this.commit(`新建 ${subDir}/${safeCategory ? `${safeCategory}/` : ''}${path.basename(filePath)}`);
 		}
 		return filePath;
 	}
@@ -839,11 +924,11 @@ export class LibraryService {
 		book: BookInfo,
 		fn: (filePath: string, content: string, relDir: string) => string | undefined
 	): Promise<void> {
-		const categories = await this.listNoteCategories(book);
-		const dirs = [NOTES_DIR, ...categories.map((c) => `${NOTES_DIR}/${c.dirName}`)];
+		const categories = await this.listCategories(book, NOTES_DIR);
+		const dirs = [NOTES_DIR, ...categories.map((c) => `${NOTES_DIR}/${c.path}`)];
 		for (const relDir of dirs) {
 			const category = relDir === NOTES_DIR ? undefined : relDir.slice(NOTES_DIR.length + 1);
-			for (const note of await this.listNotes(book, category)) {
+			for (const note of await this.listEntries(book, NOTES_DIR, category)) {
 				const filePath = path.join(book.dir, relDir, note.fileName);
 				let md: string;
 				try {
@@ -880,7 +965,7 @@ export class LibraryService {
 			}
 			const ref = refs.get(oldRel);
 			if (ref) {
-				const prefix = relDir === NOTES_DIR ? '../' : '../../';
+				const prefix = '../'.repeat(relDir.split('/').length);
 				// 均用函数形式替换：路径/标题里的 $& 等不被当作替换模式
 				return md
 					.replace(NOTE_CHAPTER_LINE_RE, () => `chapter: ${JSON.stringify(ref.relPath)}`)
@@ -1189,31 +1274,6 @@ export class LibraryService {
 		await this.updateNotesChapterRefs(book, refs);
 	}
 
-	/** 重命名笔记分类目录（笔记/ 下子目录），返回新目录名。 */
-	async renameNoteCategory(book: BookInfo, oldName: string, newName: string): Promise<string> {
-		const target = sanitizeFileTitle(newName);
-		if (target === oldName) {
-			return target;
-		}
-		const oldDir = path.join(book.dir, NOTES_DIR, oldName);
-		const newDir = path.join(book.dir, NOTES_DIR, target);
-		if (!(await pathExists(oldDir))) {
-			throw new Error(`分类「${oldName}」不存在`);
-		}
-		if (await pathExists(newDir)) {
-			throw new Error(`分类「${target}」已存在`);
-		}
-		await vscode.workspace.fs.rename(vscode.Uri.file(oldDir), vscode.Uri.file(newDir));
-		await this.commitAndRefresh(`重命名笔记分类「${oldName}」→「${target}」`);
-		return target;
-	}
-
-	/** 删除笔记分类目录（含其中全部笔记）并提交 git 快照。 */
-	async deleteNoteCategory(book: BookInfo, name: string): Promise<void> {
-		await fs.rm(path.join(book.dir, NOTES_DIR, name), { recursive: true, force: true });
-		await this.commitAndRefresh(`删除笔记分类「${name}」`);
-	}
-
 	/** 移动章节到目标分卷（根目录用 undefined），同步移动摘要镜像、重写全书导航、迁移进度与笔记关联。 */
 	async moveChapter(
 		book: BookInfo,
@@ -1391,39 +1451,20 @@ export class LibraryService {
 		return filePath;
 	}
 
-	/** 笔记分类：笔记/ 下的子目录列表。 */
-	async listNoteCategories(book: BookInfo): Promise<NoteCategory[]> {
-		let entries: Dirent[];
-		try {
-			entries = await fs.readdir(path.join(book.dir, NOTES_DIR), { withFileTypes: true });
-		} catch {
-			return [];
-		}
-		return entries
-			.filter((entry) => entry.isDirectory())
-			.map((entry) => ({ name: entry.name, dirName: entry.name }))
-			.sort((a, b) => a.name.localeCompare(b.name));
-	}
-
-	/** 某个分类下（或笔记根目录）的笔记 md 文件列表。 */
-	async listNotes(book: BookInfo, categoryDir?: string): Promise<NoteFile[]> {
-		const subDir = categoryDir ? `${NOTES_DIR}/${categoryDir}` : NOTES_DIR;
-		const entries = await this.listEntries(book, subDir);
-		return entries.map((entry) => ({ ...entry, categoryDir }));
-	}
-
-	/** 新建笔记 md（已存在则不覆盖），可选分类目录与关联章节，返回文件路径。 */
-	async createNote(book: BookInfo, name: string, categoryDir?: string, chapter?: ChapterFile): Promise<string> {
-		const safeCategory = categoryDir ? sanitizeFileTitle(categoryDir) : undefined;
-		const dir = safeCategory ? path.join(book.dir, NOTES_DIR, safeCategory) : path.join(book.dir, NOTES_DIR);
+	/** 新建笔记 md（已存在则不覆盖），可选分类路径（可多级）与关联章节，返回文件路径。 */
+	async createNote(book: BookInfo, name: string, categoryPath?: string, chapter?: ChapterFile): Promise<string> {
+		const safeCategory = categoryPath ? sanitizeCategoryPath(categoryPath) : undefined;
+		const dir = path.join(book.dir, NOTES_DIR, safeCategory ?? '');
 		await fs.mkdir(dir, { recursive: true });
 		const filePath = path.join(dir, `${sanitizeFileTitle(name)}.md`);
 		if (!(await pathExists(filePath))) {
+			// 笔记到 章节/ 的相对前缀随分类层级加深
+			const up = '../'.repeat(safeCategory ? safeCategory.split('/').length + 1 : 1);
 			const link = chapter
 				? {
 					relPath: chapterRelPath(chapter),
 					title: chapter.title,
-					href: `${safeCategory ? '../../' : '../'}${CHAPTERS_DIR}/${chapterRelPath(chapter)}`,
+					href: `${up}${CHAPTERS_DIR}/${chapterRelPath(chapter)}`,
 				}
 				: undefined;
 			await fs.writeFile(filePath, buildNoteMarkdown(name, link), 'utf8');
