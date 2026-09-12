@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 import type { BookInfo, ChapterFile, ChapterVolume, EntryFile } from '../model/book';
-import { chapterRelPath, CHAPTERS_DIR, LibraryService, VERSIONS_DIR } from '../services/library';
+import {
+	chapterRelPath,
+	CHAPTERS_DIR,
+	LibraryService,
+	matchesProgress,
+	sameChapter,
+	VERSIONS_DIR,
+} from '../services/library';
 import { LibraryTreeProvider } from './libraryTreeProvider';
 
 /** 章节的备选版本节点。 */
@@ -79,9 +86,7 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 		}
 		const volumes = await this.library.listVolumes(book);
 		const chapter = 'seq' in element ? element : element.chapter;
-		return volumes.find((v) =>
-			v.chapters.some((c) => c.fileName === chapter.fileName && (c.volumeDir ?? '') === (chapter.volumeDir ?? ''))
-		);
+		return volumes.find((v) => v.chapters.some((c) => sameChapter(c, chapter)));
 	}
 
 	getTreeItem(node: ChapterNode): vscode.TreeItem {
@@ -116,8 +121,7 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 		item.contextValue = 'chapter';
 		item.tooltip = vscode.l10n.t('Chapter {0} · {1}', chapter.seq, chapterRelPath(chapter));
 		if (book) {
-			const progress = this.library.getProgress(book.dir);
-			if (progress && (progress === chapter.fileName || progress === chapterRelPath(chapter))) {
+			if (matchesProgress(chapter, this.library.getProgress(book.dir))) {
 				item.description = '●';
 			}
 			if (versionCount > 0) {

@@ -1,5 +1,5 @@
 /** 章节文件名：`NNNN-标题.md`，导入时序号四位零填充；识别时放宽为任意位数，兼容手写/agent 创建的文件。 */
-export const CHAPTER_FILE_RE = /^(\d+)-(.+)\.md$/;
+const CHAPTER_FILE_RE = /^(\d+)-(.+)\.md$/;
 
 const ILLEGAL_FILENAME_CHARS = /[\\/:*?"<>|]/g;
 const WINDOWS_RESERVED_NAME_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
@@ -115,6 +115,33 @@ export function chineseNumberToInt(text: string): number | undefined {
 		}
 	}
 	return total + current;
+}
+
+/** 章节 markdown → 纯文本：去 BOM、导航、分隔线、标题标记、链接与强调符号（朗读与导出共用）。 */
+export function mdToPlainText(raw: string): string {
+	return raw
+		.replace(/^\uFEFF/, '')
+		.split(/\r?\n/)
+		.map((line) => {
+			const trimmed = line.trim();
+			// 去掉底部导航行与分隔线
+			if (trimmed.startsWith('---')) {
+				return '';
+			}
+			if (/^\[← 上一章\]|^\[下一章 →\]/.test(trimmed)) {
+				return '';
+			}
+			return line;
+		})
+		.join('\n')
+		.replace(/```[\s\S]*?```/g, ' ')
+		.replace(/^#{1,6}\s*(.*)$/gm, '$1')
+		.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+		.replace(/^>\s?/gm, '')
+		.replace(/[*_~`]/g, '')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
 }
 
 /** 从 markdown 首行提取一级标题（`# 标题`，兼容 `#标题`）；二级标题/正文返回 undefined。 */

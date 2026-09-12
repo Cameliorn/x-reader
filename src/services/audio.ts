@@ -1,10 +1,16 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile } from './model/book';
-import { CARDS_DIR, chapterRelPath, CHAPTERS_DIR, LibraryService, parseChapterFilePath } from './services/library';
+import type { BookInfo, ChapterFile } from '../model/book';
+import {
+	CARDS_DIR,
+	CHAPTERS_DIR,
+	LibraryService,
+	parseChapterFilePath,
+	sameChapter,
+} from './library';
 
 /** x-audio 扩展 ID（发布者 cameliorn）。 */
-export const AUDIO_EXTENSION_ID = 'cameliorn.x-audio';
+const AUDIO_EXTENSION_ID = 'cameliorn.x-audio';
 
 /** 角色卡解析出的音色配置（与 x-audio 的目录音色配置结构兼容）。 */
 export interface VoiceConfig {
@@ -18,7 +24,7 @@ export interface VoiceConfig {
 
 const NARRATOR_NAME = '旁白';
 const VOICE_LINE_RE = /^\s*(?:[-*]\s*)?音色\s*[:：]\s*(\S.*?)\s*$/u;
-const VOICE_FRONTMATTER_RE = /^\s*voice\s*Id?\s*[:：]\s*(\S.*?)\s*$/i;
+const VOICE_FRONTMATTER_RE = /^\s*voice(?:\s*Id)?\s*[:：]\s*(\S.*?)\s*$/i;
 const TYPE_LINE_RE = /^\s*(?:[-*]\s*)?类型\s*[:：]\s*(\S.*?)\s*$/u;
 const TITLE_RE = /^\s*#\s+(.+?)\s*$/u;
 const ROLE_VOICE_TYPES = ['narrator', 'male', 'female', 'girl', 'boy', 'child', 'elderly'] as const;
@@ -78,7 +84,7 @@ export async function speakViaAudio(
 }
 
 /**
- * 从书的角色卡目录读取音色配置：每张卡片 `# 角色名` 即角色名，
+ * 从书的角色卡目录（含任意层级分类）读取音色配置：每张卡片 `# 角色名` 即角色名，
  * `- 音色：xxx`（或 `音色: xxx`、frontmatter `voice: xxx` / `voiceId: xxx`）指定音色，
  * 可选 `- 类型：男/女/少女/少年/幼童/老人/旁白` 把音色同时映射到角色类型；
  * 名为「旁白」的卡片音色自动作为旁白音色。没有卡片带音色时返回 undefined。
@@ -88,12 +94,22 @@ export async function readCharacterVoiceConfig(
 	bookDir: string
 ): Promise<VoiceConfig | undefined> {
 	const book: BookInfo = { name: path.basename(bookDir), dir: bookDir };
-	const entries = await library.listEntries(book, CARDS_DIR);
 	const characterVoices: Record<string, string> = {};
 	const roleTypeVoices: Record<string, string> = {};
 
-	for (const entry of entries) {
-		const cardUri = vscode.Uri.file(path.join(bookDir, CARDS_DIR, entry.fileName));
+	// 角色卡支持多级分类，根目录与各分类下的卡片都要读
+	const categoryPaths = (await library.listCategories(book, CARDS_DIR)).map((category) => category.path);
+	const entries = (
+		await Promise.all(
+			[undefined, ...categoryPaths].map(async (categoryPath) => {
+				const cards = await library.listEntries(book, CARDS_DIR, categoryPath);
+				return cards.map((entry) => ({ entry, categoryPath }));
+			})
+		)
+	).flat();
+
+	for (const { entry, categoryPath } of entries) {
+		const cardUri = vscode.Uri.file(path.join(bookDir, CARDS_DIR, categoryPath ?? '', entry.fileName));
 		let raw: string;
 		try {
 			raw = Buffer.from(await vscode.workspace.fs.readFile(cardUri)).toString('utf8');
@@ -177,7 +193,7 @@ export async function resolveChapter(
 	if (bookDir && fileName) {
 		const book: BookInfo = { name: path.basename(bookDir), dir: bookDir };
 		const chapters = await library.listChapters(book);
-		const found = chapters.find((c) => chapterRelPath(c) === chapterRelPath({ fileName, volumeDir }));
+		const found = chapters.find((c) => sameChapter(c, { fileName, volumeDir }));
 		if (found) {
 			return { bookDir, chapter: found };
 		}
@@ -190,9 +206,7 @@ export async function resolveChapter(
 		const book: BookInfo = { name: path.basename(parsed.bookDir), dir: parsed.bookDir };
 		try {
 			const chapters = await library.listChapters(book);
-			const found = chapters.find(
-				(c) => chapterRelPath(c) === chapterRelPath({ fileName: parsed.fileName, volumeDir: parsed.volumeDir })
-			);
+			const found = chapters.find((c) => sameChapter(c, parsed));
 			if (found) {
 				return { bookDir: parsed.bookDir, chapter: found };
 			}
@@ -230,31 +244,4 @@ export async function readChapterText(
 	} catch {
 		return undefined;
 	}
-}
-
-/** 章节 markdown → 纯文本：去 BOM、导航、分隔线、标题标记、链接与强调符号。 */
-export function mdToPlainText(raw: string): string {
-	return raw
-		.replace(/^\uFEFF/, '')
-		.split(/\r?\n/)
-		.map((line) => {
-			const trimmed = line.trim();
-			// 去掉底部导航行与分隔线
-			if (trimmed.startsWith('---')) {
-				return '';
-			}
-			if (/^\[← 上一章\]|^\[下一章 →\]/.test(trimmed)) {
-				return '';
-			}
-			return line;
-		})
-		.join('\n')
-		.replace(/```[\s\S]*?```/g, ' ')
-		.replace(/^#{1,6}\s*(.*)$/gm, '$1')
-		.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-		.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-		.replace(/^>\s?/gm, '')
-		.replace(/[*_~`]/g, '')
-		.replace(/\n{3,}/g, '\n\n')
-		.trim();
 }

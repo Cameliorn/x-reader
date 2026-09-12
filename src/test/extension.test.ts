@@ -5,6 +5,7 @@ import * as iconv from 'iconv-lite';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { readCharacterVoiceConfig } from '../services/audio';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -16,7 +17,7 @@ import {
 	WORLD_DIR,
 } from '../services/bookFactory';
 import { commitAll, resetHistory } from '../services/git';
-import { chapterRelPath, LibraryService, parseChapterFilePath } from '../services/library';
+import { chapterRelPath, LibraryService, parseChapterFilePath, shelfLeafName, shelfParentPath, SHELVES_FILE } from '../services/library';
 import {
 	buildChapterMarkdown,
 	buildChapterSummaryMarkdown,
@@ -560,6 +561,29 @@ suite('LibraryService 写操作', () => {
 		}
 	});
 
+	test('exportBookText 导出全文：多卷补卷名，单卷不加，Markdown 标记与导航行已去除', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', TWO_VOLUME_TEXT);
+			const text = await service.exportBookText(book);
+			assert.ok(text.includes('第一卷'));
+			assert.ok(text.includes('第二卷'));
+			assert.ok(text.includes('第1章 甲'));
+			assert.ok(text.includes('正文乙'));
+			assert.ok(!text.includes('#'));
+			assert.ok(!text.includes('上一章'));
+			assert.ok(!text.includes('下一章'));
+
+			const single = await createBookFromText(root, '单卷书', THREE_CHAPTER_TEXT);
+			const singleText = await service.exportBookText(single.book);
+			assert.ok(!singleText.includes('第一卷'));
+			assert.ok(singleText.includes('第3章 丙'));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('renameChapter 同步文件名、摘要镜像、导航、进度与笔记关联（含无引号 frontmatter）', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
@@ -1015,6 +1039,61 @@ suite('条目分类（世界书/角色卡/笔记）', () => {
 		}
 	});
 
+	test('moveEntry 跨分类移动条目，目标分类不存在则创建，重名时报错', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			await service.createEntry(book, WORLD_DIR, '王城', '地理/城邦');
+
+			// 多级目标分类不存在时按路径创建
+			await service.moveEntry(book, WORLD_DIR, '地理/城邦', '王城.md', '地理/城邦/首都');
+			assert.ok(await exists(path.join(book.dir, WORLD_DIR, '地理', '城邦', '首都', '王城.md')));
+			assert.ok(!(await exists(path.join(book.dir, WORLD_DIR, '地理', '城邦', '王城.md'))));
+			assert.deepStrictEqual(
+				(await service.listEntries(book, WORLD_DIR, '地理/城邦/首都')).map((e) => e.name),
+				['王城']
+			);
+
+			// 移回根目录
+			await service.moveEntry(book, WORLD_DIR, '地理/城邦/首都', '王城.md', undefined);
+			assert.deepStrictEqual((await service.listEntries(book, WORLD_DIR)).map((e) => e.name), ['王城']);
+
+			// 目标分类同名条目已存在
+			await service.createEntry(book, WORLD_DIR, '王城', '地理');
+			await assert.rejects(() => service.moveEntry(book, WORLD_DIR, undefined, '王城.md', '地理'), /已存在/);
+			// 原地移动
+			await assert.rejects(() => service.moveEntry(book, WORLD_DIR, undefined, '王城.md', undefined), /已在目标分类/);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('moveEntry 移动笔记后按新层级重写关联章节链接', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const chapter = (await service.listChapters(book))[0];
+			const notePath = await service.createNote(book, '支线想法', '剧情', chapter);
+			assert.ok((await fs.readFile(notePath, 'utf8')).includes(`(<../../${CHAPTERS_DIR}/第一卷/`));
+
+			// 层级加深：链接前缀随之加长
+			await service.moveEntry(book, NOTES_DIR, '剧情', '支线想法.md', '剧情/支线');
+			const deeper = await fs.readFile(path.join(book.dir, NOTES_DIR, '剧情', '支线', '支线想法.md'), 'utf8');
+			assert.ok(deeper.includes(`(<../../../${CHAPTERS_DIR}/第一卷/${chapter.fileName}>)`));
+			assert.ok(deeper.includes('chapter: "第一卷/'));
+			assert.ok(deeper.includes('> 关联章节：[第1章 甲]'));
+
+			// 移回根目录：前缀还原为一级
+			await service.moveEntry(book, NOTES_DIR, '剧情/支线', '支线想法.md', undefined);
+			const restored = await fs.readFile(path.join(book.dir, NOTES_DIR, '支线想法.md'), 'utf8');
+			assert.ok(restored.includes(`(<../${CHAPTERS_DIR}/第一卷/${chapter.fileName}>)`));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('嵌套分类笔记的章节关联链接按层级计算，章节改名后同步更新', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
@@ -1032,6 +1111,211 @@ suite('条目分类（世界书/角色卡/笔记）', () => {
 			const updated = await fs.readFile(notePath, 'utf8');
 			assert.ok(updated.includes(`(<../../../${CHAPTERS_DIR}/第一卷/${newFileName}>)`));
 		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+	test('分类路径统一清洗，含 .. 的输入不会越出条目根目录', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const outside = path.join(root, '外部文件.md');
+			await fs.writeFile(outside, 'x', 'utf8');
+
+			// 新建：越界片段被化解为普通名字，条目仍落在条目根目录内
+			const entry = await service.createEntry(book, WORLD_DIR, '王城', '../../外部');
+			assert.strictEqual(
+				path.relative(book.dir, entry),
+				path.join(WORLD_DIR, '未命名', '未命名', '外部', '王城.md')
+			);
+
+			// 移动：源与目标都经清洗，落点仍在条目根目录内
+			await service.moveEntry(book, WORLD_DIR, '../../外部', '王城.md', '../../../..');
+			assert.ok(await exists(path.join(book.dir, WORLD_DIR, '未命名', '未命名', '未命名', '未命名', '王城.md')));
+
+			// 删除与读取：越界路径既不删也读不到条目根目录之外的内容
+			await service.deleteCategory(book, WORLD_DIR, '../../..');
+			assert.ok(await exists(outside));
+			assert.deepStrictEqual(await service.listEntries(book, WORLD_DIR, '../../../..'), []);
+			assert.deepStrictEqual(await service.listChildCategories(book, WORLD_DIR, '../../../..'), []);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('子书架（多级分类）', () => {
+	const BOOK_TEXT = ['# 第一卷', '## 第1章 甲', '正文甲'].join('\n');
+	let root = '';
+	let prevLibraryPath: string | undefined;
+	const service = makeService();
+
+	setup(async () => {
+		root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		const cfg = vscode.workspace.getConfiguration('xReader');
+		prevLibraryPath = cfg.get<string>('libraryPath');
+		await cfg.update('libraryPath', root, vscode.ConfigurationTarget.Global);
+	});
+
+	teardown(async () => {
+		const cfg = vscode.workspace.getConfiguration('xReader');
+		await cfg.update('libraryPath', prevLibraryPath ?? '', vscode.ConfigurationTarget.Global);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	test('shelfParentPath/shelfLeafName 切分多级路径', () => {
+		assert.strictEqual(shelfParentPath('题材'), undefined);
+		assert.strictEqual(shelfParentPath('题材/同人/XXX'), '题材/同人');
+		assert.strictEqual(shelfLeafName('题材'), '题材');
+		assert.strictEqual(shelfLeafName('题材/同人/XXX'), 'XXX');
+	});
+
+	test('createShelf 支持多级路径，缺的上级一并落盘，重名与默认名冲突时报错', async () => {
+		await service.createShelf('题材/同人/XXX');
+
+		assert.deepStrictEqual(
+			(await service.listShelves()).map((s) => s.name),
+			['题材', '题材/同人', '题材/同人/XXX']
+		);
+		const raw = JSON.parse(await fs.readFile(path.join(root, SHELVES_FILE), 'utf8')) as { name: string }[];
+		assert.deepStrictEqual(raw.map((s) => s.name), ['题材', '题材/同人', '题材/同人/XXX']);
+
+		await assert.rejects(() => service.createShelf('题材/同人'), /已存在/);
+		await assert.rejects(() => service.createShelf('默认/子类'), /冲突/);
+	});
+
+	test('书链接挂在多级子书架下，同级不同父可同名', async () => {
+		const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+		await service.createShelf('题材/同人');
+		await service.createShelf('体裁/同人');
+
+		await service.addBookToShelf('题材/同人', book.name);
+		assert.deepStrictEqual((await service.listShelves()).find((s) => s.name === '题材/同人')?.books, [book.name]);
+		assert.deepStrictEqual((await service.listShelves()).find((s) => s.name === '体裁/同人')?.books, []);
+
+		await service.removeBookFromShelf('题材/同人', book.name);
+		assert.deepStrictEqual((await service.listShelves()).find((s) => s.name === '题材/同人')?.books, []);
+	});
+
+	test('renameShelf 只改末级名并同步下级路径，目标重名时报错', async () => {
+		await service.createShelf('题材/同人/XXX');
+
+		await service.renameShelf('题材/同人', '同人向');
+		assert.deepStrictEqual(
+			(await service.listShelves()).map((s) => s.name),
+			['题材', '题材/同人向', '题材/同人向/XXX']
+		);
+
+		await service.createShelf('其他');
+		await assert.rejects(() => service.renameShelf('其他', '题材'), /已存在/);
+		// 改父分类名时整棵子树迁移
+		await service.renameShelf('题材', '题材设定');
+		assert.deepStrictEqual(
+			(await service.listShelves()).map((s) => s.name),
+			['其他', '题材设定', '题材设定/同人向', '题材设定/同人向/XXX']
+		);
+	});
+
+	test('deleteShelf 连同下级一并删除，书目录不受影响', async () => {
+		const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+		await service.createShelf('题材/同人/XXX');
+		await service.createShelf('体裁');
+		await service.addBookToShelf('题材/同人/XXX', book.name);
+
+		await service.deleteShelf('题材');
+
+		assert.deepStrictEqual((await service.listShelves()).map((s) => s.name), ['体裁']);
+		assert.ok(await exists(book.dir));
+	});
+
+	test('书改名时多级子书架里的链接级联同步', async () => {
+		const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+		await service.createShelf('题材/同人/XXX');
+		await service.addBookToShelf('题材/同人/XXX', book.name);
+
+		const renamed = await service.renameBook(book, '新书');
+
+		assert.deepStrictEqual(
+			(await service.listShelves()).find((s) => s.name === '题材/同人/XXX')?.books,
+			[renamed.name]
+		);
+	});
+});
+
+suite('大书库扫描', () => {
+	test('countChapters 与 listChapters 计数一致（含分卷与根目录章节）', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(
+				root,
+				'书',
+				['# 第一卷', '## 第1章 甲', '正文甲', '# 第二卷', '## 第2章 乙', '正文乙'].join('\n')
+			);
+			await service.createChapter(book, '第3章 丙');
+
+			assert.strictEqual(await service.countChapters(book), (await service.listChapters(book)).length);
+			assert.strictEqual(await service.countChapters(book), 3);
+
+			// 目录名不是章节文件、无章节的空书都按 0 处理
+			const empty = await createBookFromText(root, '空书', '没有标题的正文');
+			await fs.rm(path.join(empty.book.dir, CHAPTERS_DIR), { recursive: true, force: true });
+			assert.strictEqual(await service.countChapters(empty.book), 0);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('listChapterCounts 按书目录批量返回章节数', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const first = await createBookFromText(root, '甲书', ['## 第1章', '正文', '## 第2章', '正文'].join('\n'));
+			const second = await createBookFromText(root, '乙书', ['## 第1章', '正文'].join('\n'));
+
+			const counts = await service.listChapterCounts([first.book, second.book]);
+
+			assert.strictEqual(counts.get(first.book.dir), 2);
+			assert.strictEqual(counts.get(second.book.dir), 1);
+			assert.strictEqual(counts.size, 2);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('短时间内的多次写操作合并为一次刷新通知', async () => {
+		const service = makeService();
+		let fires = 0;
+		service.onDidChange(() => fires++);
+
+		for (let i = 0; i < 20; i++) {
+			await service.setProgress('/lib/书', `第${i}章.md`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		assert.ok(fires >= 1, '变更后应通知刷新');
+		assert.ok(fires <= 3, `20 次写操作应合并为 1 次左右通知，实际 ${fires} 次`);
+	});
+
+	test('listBooks 并发扫描后仍只把含 元数据.md 的目录当作书', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		const cfg = vscode.workspace.getConfiguration('xReader');
+		const prev = cfg.get<string>('libraryPath');
+		try {
+			await cfg.update('libraryPath', root, vscode.ConfigurationTarget.Global);
+			const service = makeService();
+			await createBookFromText(root, '书B', '正文');
+			await createBookFromText(root, '书A', '正文');
+			await fs.mkdir(path.join(root, '不是书'), { recursive: true });
+			await fs.writeFile(path.join(root, '不是书', 'readme.md'), '', 'utf8');
+			await fs.writeFile(path.join(root, '散文件.md'), '', 'utf8');
+
+			assert.deepStrictEqual(
+				(await service.listBooks()).map((book) => book.name),
+				['书A', '书B']
+			);
+		} finally {
+			await cfg.update('libraryPath', prev ?? '', vscode.ConfigurationTarget.Global);
 			await fs.rm(root, { recursive: true, force: true });
 		}
 	});
@@ -1108,6 +1392,48 @@ suite('git 服务', () => {
 		try {
 			await fs.writeFile(path.join(root, '.git'), 'gitdir: /nonexistent');
 			assert.deepStrictEqual(await resetHistory(root, '重建仓库'), { ok: false, reason: 'gitnotdir' });
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('分角色朗读音色配置', () => {
+	test('读取根目录与分类下的角色卡：音色行、frontmatter voice/voiceId 与类型映射', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-voice-'));
+		try {
+			const bookDir = path.join(root, '书');
+			const nested = path.join(bookDir, CARDS_DIR, '主角团', '配角');
+			await fs.mkdir(nested, { recursive: true });
+			// 根目录：旁白用「音色」行，自动作为旁白音色
+			await fs.writeFile(path.join(bookDir, CARDS_DIR, '旁白.md'), '# 旁白\n\n- 音色：zh-narrator\n', 'utf8');
+			// 二级分类：frontmatter voice + 类型映射
+			await fs.writeFile(
+				path.join(nested, '林月.md'),
+				'---\nvoice: zh-female-01\n---\n\n# 林月\n\n- 类型：少女\n',
+				'utf8'
+			);
+			// 二级分类：frontmatter voiceId，无类型时按角色名映射
+			await fs.writeFile(path.join(nested, '陈默.md'), '---\nvoiceId: zh-male-09\n---\n\n# 陈默\n', 'utf8');
+
+			assert.deepStrictEqual(await readCharacterVoiceConfig(makeService(), bookDir), {
+				characterVoices: { 陈默: 'zh-male-09' },
+				roleTypeVoices: { narrator: 'zh-narrator', girl: 'zh-female-01' },
+				voiceParams: {},
+			});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('没有任何卡片带音色时返回 undefined', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-voice-'));
+		try {
+			const bookDir = path.join(root, '书');
+			await fs.mkdir(path.join(bookDir, CARDS_DIR), { recursive: true });
+			await fs.writeFile(path.join(bookDir, CARDS_DIR, '甲.md'), '# 甲\n\n这个角色没有音色。\n', 'utf8');
+
+			assert.strictEqual(await readCharacterVoiceConfig(makeService(), bookDir), undefined);
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}

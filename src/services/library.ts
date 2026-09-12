@@ -29,6 +29,7 @@ import {
 	escapeMdLinkText,
 	extractMarkdownTitle,
 	intervalSummaryFileName,
+	mdToPlainText,
 	navRelPath,
 	parseBookMetadata,
 	parseChapterFileName,
@@ -70,14 +71,75 @@ export function chapterRelPath(chapter: Pick<ChapterFile, 'fileName' | 'volumeDi
 	return chapter.volumeDir ? `${chapter.volumeDir}/${chapter.fileName}` : chapter.fileName;
 }
 
-/** 清洗分类相对路径：按 / 拆段逐段清洗，去掉空段（可多级嵌套）；无有效段时返回 undefined。 */
-function sanitizeCategoryPath(raw: string): string | undefined {
+/** 是否同一章（分卷目录 + 文件名）。 */
+export function sameChapter(
+	a: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+	b: Pick<ChapterFile, 'fileName' | 'volumeDir'>
+): boolean {
+	return a.fileName === b.fileName && (a.volumeDir ?? '') === (b.volumeDir ?? '');
+}
+
+/** 进度键是否指向该章：新格式为分卷相对路径，兼容旧格式的纯文件名。 */
+export function matchesProgress(
+	chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
+	progress: string | undefined
+): boolean {
+	return progress !== undefined && (progress === chapterRelPath(chapter) || progress === chapter.fileName);
+}
+
+/** 清洗条目分类 / 子书架相对路径：按 / 拆段逐段清洗，去掉空段（可多级嵌套）；无有效段时返回 undefined。 */
+function sanitizeRelativePath(raw: string): string | undefined {
 	const segments = raw
 		.split(/[/\\]+/)
 		.map((segment) => segment.trim())
 		.filter((segment) => segment.length > 0)
 		.map((segment) => sanitizeFileTitle(segment));
 	return segments.length > 0 ? segments.join('/') : undefined;
+}
+
+/** 可选分类路径的清洗：undefined / 空表示条目根目录；`..` 等越界片段会被化解为普通名字。 */
+function safeCategoryPath(categoryPath?: string): string | undefined {
+	return categoryPath ? sanitizeRelativePath(categoryPath) : undefined;
+}
+
+/** 子书架路径的父路径；根层返回 undefined。 */
+export function shelfParentPath(path: string): string | undefined {
+	const index = path.lastIndexOf('/');
+	return index < 0 ? undefined : path.slice(0, index);
+}
+
+/** 子书架路径的末级名（树节点显示用）。 */
+export function shelfLeafName(path: string): string {
+	const index = path.lastIndexOf('/');
+	return index < 0 ? path : path.slice(index + 1);
+}
+
+/** 把子书架路径（自身或后代）从 oldPath 前缀改写为 newPath。 */
+function rewriteShelfPath(path: string, oldPath: string, newPath: string): string {
+	if (path === oldPath) {
+		return newPath;
+	}
+	return path.startsWith(`${oldPath}/`) ? newPath + path.slice(oldPath.length) : path;
+}
+
+/** 补齐子书架清单里缺失的上级路径（手改 json、或新建多级路径时只存了最深一层），按路径排序。 */
+function withAncestorShelves(shelves: Shelf[]): Shelf[] {
+	const byPath = new Map<string, Shelf>();
+	for (const shelf of shelves) {
+		if (!byPath.has(shelf.name)) {
+			byPath.set(shelf.name, shelf);
+		}
+	}
+	for (const shelf of [...byPath.values()]) {
+		const segments = shelf.name.split('/');
+		for (let i = 1; i < segments.length; i++) {
+			const ancestor = segments.slice(0, i).join('/');
+			if (!byPath.has(ancestor)) {
+				byPath.set(ancestor, { name: ancestor, books: [] });
+			}
+		}
+	}
+	return [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** 章节文件的路径构成（书目录 + 分卷 + 文件名）。 */
@@ -118,6 +180,32 @@ async function pathExists(filePath: string): Promise<boolean> {
 	}
 }
 
+/**
+ * 目录扫描并发上限：大书库（上千本书 / 单本上千章）下无上限的 Promise.all 会同时打开过多句柄（EMFILE），
+ * 也更容易拖慢磁盘；按批执行兼顾吞吐与稳定。
+ */
+const SCAN_CONCURRENCY = 16;
+
+/** 变更通知合并窗口：批量操作（连续导入、顺延改名等）只触发一次全量刷新。 */
+const REFRESH_COALESCE_MS = 80;
+
+/** 按并发上限并行映射，结果顺序与输入一致。 */
+async function mapLimit<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let cursor = 0;
+	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+		for (; ;) {
+			const index = cursor++;
+			if (index >= items.length) {
+				return;
+			}
+			results[index] = await task(items[index]);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
 const VOLUME_NAME_RE = /^\s*第\s*([0-9零〇一二两三四五六七八九十百千万拾佰仟]+)\s*卷/;
 
 /** 卷目录排序键：第X卷按数字，其余按名称兜底排最后。 */
@@ -139,6 +227,12 @@ export const NOTE_CHAPTER_FM_RE = /^chapter:\s*"?([^"\n]+?)"?\s*$/m;
 
 /** 笔记 frontmatter 的 chapter 整行（替换/删除用；与 NOTE_CHAPTER_FM_RE 同锚，引号可选）。 */
 const NOTE_CHAPTER_LINE_RE = /^chapter:[^\n]*$/m;
+
+/** 笔记正文的「关联章节」链接行（捕获链接文字，替换/删除用）。 */
+const NOTE_CHAPTER_LINK_RE = /^> 关联章节：\[([^\]]*)\]\([^\n]*\)$/m;
+
+/** 笔记正文的「关联章节」整行（删除用，匹配任何形式）。 */
+const NOTE_CHAPTER_LINK_LINE_RE = /^> 关联章节：[^\n]*$/m;
 
 /** 关闭已打开该文件的编辑器页签（含渲染预览）；exceptActive 为 true 时跳过当前活动页签。 */
 export async function closeFileTabs(filePath: string, exceptActive = false): Promise<void> {
@@ -165,6 +259,7 @@ export class LibraryService {
 	private watcher: vscode.FileSystemWatcher | undefined;
 	private watcherRoot = '';
 	private debounce: ReturnType<typeof setTimeout> | undefined;
+	private refreshTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 防抖期内内容标题可能已变更、待同步文件名的章节文件路径。 */
 	private pendingChapterSync = new Set<string>();
 
@@ -177,15 +272,29 @@ export class LibraryService {
 					if (this.debounce) {
 						clearTimeout(this.debounce);
 					}
+					if (this.refreshTimer) {
+						clearTimeout(this.refreshTimer);
+					}
 				},
 			},
 			vscode.workspace.onDidChangeConfiguration((event) => {
 				if (event.affectsConfiguration('xReader.libraryPath')) {
 					this.ensureWatcher();
-					this._onDidChange.fire();
+					this.scheduleRefresh();
 				}
 			})
 		);
+	}
+
+	/** 合并窗口内的变更只通知一次：批量导入上千本书时逐本刷新会退化成 O(n²) 次目录扫描。 */
+	private scheduleRefresh(): void {
+		if (this.refreshTimer) {
+			return;
+		}
+		this.refreshTimer = setTimeout(() => {
+			this.refreshTimer = undefined;
+			this._onDidChange.fire();
+		}, REFRESH_COALESCE_MS);
 	}
 
 	getLibraryPath(): string {
@@ -205,7 +314,7 @@ export class LibraryService {
 	/** 提交快照并刷新视图。 */
 	private async commitAndRefresh(message: string): Promise<void> {
 		await this.commit(message);
-		this._onDidChange.fire();
+		this.scheduleRefresh();
 	}
 
 	/** 章节文件绝对路径（volumeDir 省略时指 章节/ 根，即默认卷）。 */
@@ -267,7 +376,7 @@ export class LibraryService {
 			.getConfiguration('xReader')
 			.update('libraryPath', root, vscode.ConfigurationTarget.Global);
 		this.ensureWatcher();
-		this._onDidChange.fire();
+		this.scheduleRefresh();
 		return root;
 	}
 
@@ -283,23 +392,43 @@ export class LibraryService {
 		} catch {
 			return [];
 		}
-		const books: BookInfo[] = [];
-		for (const entry of entries) {
-			if (!entry.isDirectory()) {
-				continue;
+		const books = await mapLimit(
+			entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+			SCAN_CONCURRENCY,
+			async (name): Promise<BookInfo | undefined> => {
+				const dir = path.join(root, name);
+				return (await pathExists(path.join(dir, META_FILE))) ? { name, dir } : undefined;
 			}
-			const dir = path.join(root, entry.name);
-			try {
-				await fs.access(path.join(dir, META_FILE));
-				books.push({ name: entry.name, dir });
-			} catch {
-				// 非书文件夹
-			}
-		}
-		return books.sort((a, b) => a.name.localeCompare(b.name));
+		);
+		return books
+			.filter((book): book is BookInfo => book !== undefined)
+			.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
-	/** 读取 书架.json（缺失或损坏时按空处理）。 */
+	/** 书库中是否至少有一本书：空态判断只需命中一本即可返回，避免为一次刷新扫描全部书目。 */
+	async hasBooks(): Promise<boolean> {
+		const root = this.getLibraryPath();
+		if (!root) {
+			return false;
+		}
+		let entries: Dirent[];
+		try {
+			entries = await fs.readdir(root, { withFileTypes: true });
+		} catch {
+			return false;
+		}
+		const dirNames = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+		for (let i = 0; i < dirNames.length; i += SCAN_CONCURRENCY) {
+			const batch = dirNames.slice(i, i + SCAN_CONCURRENCY);
+			const found = await Promise.all(batch.map((name) => pathExists(path.join(root, name, META_FILE))));
+			if (found.includes(true)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** 读取 书架.json（缺失或损坏时按空处理）；缺失的上级路径自动补齐，返回按路径排序的清单。 */
 	private async readShelves(): Promise<Shelf[]> {
 		if (!this.getLibraryPath()) {
 			return [];
@@ -309,7 +438,7 @@ export class LibraryService {
 			if (!Array.isArray(parsed)) {
 				return [];
 			}
-			const shelves: Shelf[] = [];
+			const byPath = new Map<string, Shelf>();
 			for (const item of parsed) {
 				if (
 					item &&
@@ -319,10 +448,14 @@ export class LibraryService {
 					Array.isArray((item as Shelf).books) &&
 					(item as Shelf).books.every((b) => typeof b === 'string')
 				) {
-					shelves.push({ name: (item as Shelf).name.trim(), books: [...(item as Shelf).books] });
+					const name = (item as Shelf).name.trim();
+					if (!byPath.has(name)) {
+						byPath.set(name, { name, books: [...(item as Shelf).books] });
+					}
 				}
 			}
-			return shelves;
+			// 手改 json 或历史数据只剩深层路径时补出上级，保证树能完整展开
+			return withAncestorShelves([...byPath.values()]);
 		} catch {
 			return [];
 		}
@@ -338,68 +471,83 @@ export class LibraryService {
 			await fs.rm(path.join(root, SHELVES_FILE), { force: true });
 			return;
 		}
-		await fs.writeFile(path.join(root, SHELVES_FILE), JSON.stringify(shelves, null, '\t'), 'utf8');
+		const sorted = [...shelves].sort((a, b) => a.name.localeCompare(b.name));
+		await fs.writeFile(path.join(root, SHELVES_FILE), JSON.stringify(sorted, null, '\t'), 'utf8');
 	}
 
-	/** 自定义子书架列表（不含默认子书架）。 */
+	/** 自定义子书架列表（不含默认子书架），按路径排序。 */
 	async listShelves(): Promise<Shelf[]> {
 		return this.readShelves();
 	}
 
-	/** 校验子书架名并返回；与默认名或已有子书架重名时抛错。 */
-	private async validateShelfName(name: string, except?: string): Promise<string> {
-		const target = name.trim();
+	/** 校验子书架路径（可多级，如 题材/同人）并返回清洗结果。 */
+	private async validateShelfPath(raw: string, except?: string): Promise<string> {
+		const target = sanitizeRelativePath(raw);
 		if (!target) {
 			throw new Error('子书架名不能为空');
 		}
-		if (target === DEFAULT_SHELF_NAME || (await this.readShelves()).some((s) => s.name === target && s.name !== except)) {
+		if (target === DEFAULT_SHELF_NAME || target.startsWith(`${DEFAULT_SHELF_NAME}/`)) {
+			throw new Error(`子书架「${target}」与默认子书架「${DEFAULT_SHELF_NAME}」冲突`);
+		}
+		if ((await this.readShelves()).some((s) => s.name === target && s.name !== except)) {
 			throw new Error(`子书架「${target}」已存在`);
 		}
 		return target;
 	}
 
-	async createShelf(name: string): Promise<void> {
-		const target = await this.validateShelfName(name);
-		const shelves = await this.readShelves();
-		shelves.push({ name: target, books: [] });
+	/** 新建子书架（path 可多级，如 题材/同人，缺的上级一并补出），返回清洗后的路径。 */
+	async createShelf(path: string): Promise<string> {
+		const target = await this.validateShelfPath(path);
+		const shelves = withAncestorShelves([...(await this.readShelves()), { name: target, books: [] }]);
 		await this.saveShelves(shelves);
 		await this.commitAndRefresh(`新建子书架「${target}」`);
+		return target;
 	}
 
-	async renameShelf(oldName: string, newName: string): Promise<void> {
-		const target = await this.validateShelfName(newName, oldName);
+	/** 重命名子书架（newPath 为同级名称，也可写成相对路径以并层；下级子书架随路径整体迁移）。 */
+	async renameShelf(oldPath: string, newPath: string): Promise<void> {
 		const shelves = await this.readShelves();
-		const shelf = shelves.find((s) => s.name === oldName);
-		if (!shelf) {
-			throw new Error(`子书架「${oldName}」不存在`);
+		if (!shelves.some((s) => s.name === oldPath)) {
+			throw new Error(`子书架「${oldPath}」不存在`);
 		}
-		shelf.name = target;
-		await this.saveShelves(shelves);
-		await this.commitAndRefresh(`重命名子书架「${oldName}」→「${target}」`);
+		const parent = shelfParentPath(oldPath);
+		const target = await this.validateShelfPath(parent ? `${parent}/${newPath}` : newPath, oldPath);
+		if (target === oldPath) {
+			return;
+		}
+		const renamed = shelves.map((s) => ({ ...s, name: rewriteShelfPath(s.name, oldPath, target) }));
+		if (new Set(renamed.map((s) => s.name)).size !== renamed.length) {
+			throw new Error(`子书架「${target}」已存在`);
+		}
+		await this.saveShelves(renamed);
+		await this.commitAndRefresh(`重命名子书架「${oldPath}」→「${target}」`);
 	}
 
-	async deleteShelf(name: string): Promise<void> {
-		const shelves = (await this.readShelves()).filter((s) => s.name !== name);
+	/** 删除子书架及其全部下级子书架（只解除书籍链接，不删除书）。 */
+	async deleteShelf(path: string): Promise<void> {
+		const shelves = (await this.readShelves()).filter(
+			(s) => s.name !== path && !s.name.startsWith(`${path}/`)
+		);
 		await this.saveShelves(shelves);
-		await this.commitAndRefresh(`删除子书架「${name}」`);
+		await this.commitAndRefresh(`删除子书架「${path}」`);
 	}
 
-	async addBookToShelf(shelfName: string, bookName: string): Promise<void> {
+	async addBookToShelf(shelfPath: string, bookName: string): Promise<void> {
 		const shelves = await this.readShelves();
-		const shelf = shelves.find((s) => s.name === shelfName);
+		const shelf = shelves.find((s) => s.name === shelfPath);
 		if (!shelf) {
-			throw new Error(`子书架「${shelfName}」不存在`);
+			throw new Error(`子书架「${shelfPath}」不存在`);
 		}
 		if (!shelf.books.includes(bookName)) {
 			shelf.books.push(bookName);
 			await this.saveShelves(shelves);
-			await this.commitAndRefresh(`添加《${bookName}》到子书架「${shelfName}」`);
+			await this.commitAndRefresh(`添加《${bookName}》到子书架「${shelfPath}」`);
 		}
 	}
 
-	async removeBookFromShelf(shelfName: string, bookName: string): Promise<void> {
+	async removeBookFromShelf(shelfPath: string, bookName: string): Promise<void> {
 		const shelves = await this.readShelves();
-		const shelf = shelves.find((s) => s.name === shelfName);
+		const shelf = shelves.find((s) => s.name === shelfPath);
 		if (!shelf) {
 			return;
 		}
@@ -407,7 +555,7 @@ export class LibraryService {
 		if (filtered.length !== shelf.books.length) {
 			shelf.books = filtered;
 			await this.saveShelves(shelves);
-			await this.commitAndRefresh(`从子书架「${shelfName}」移除《${bookName}》`);
+			await this.commitAndRefresh(`从子书架「${shelfPath}」移除《${bookName}》`);
 		}
 	}
 
@@ -453,12 +601,14 @@ export class LibraryService {
 				}
 			}
 		}
-		const rootChapters: ChapterFile[] = await Promise.all(
-			rootParsed.map(async ({ parsed, fileName }) => ({
+		const rootChapters: ChapterFile[] = await mapLimit(
+			rootParsed,
+			SCAN_CONCURRENCY,
+			async ({ parsed, fileName }) => ({
 				...parsed,
 				title: (await this.readChapterContentTitle(this.chapterPath(book, fileName))) ?? parsed.title,
 				fileName,
-			}))
+			})
 		);
 		rootChapters.sort(bySeq);
 
@@ -477,7 +627,7 @@ export class LibraryService {
 			}
 		}
 		volumeDirs.sort((a, b) => volumeSortKey(a) - volumeSortKey(b) || a.localeCompare(b));
-		const readVolumes = await Promise.all(volumeDirs.map((dirName) => this.readVolume(book, dirName)));
+		const readVolumes = await mapLimit(volumeDirs, SCAN_CONCURRENCY, (dirName) => this.readVolume(book, dirName));
 		volumes.push(...readVolumes);
 		return volumes;
 	}
@@ -490,16 +640,14 @@ export class LibraryService {
 			files = [];
 		}
 		const chapters = (
-			await Promise.all(
-				files.map(async (fileName): Promise<ChapterFile | undefined> => {
-					const parsed = parseChapterFileName(fileName);
-					if (!parsed) {
-						return undefined;
-					}
-					const contentTitle = await this.readChapterContentTitle(this.chapterPath(book, fileName, dirName));
-					return { ...parsed, title: contentTitle ?? parsed.title, fileName, volumeDir: dirName };
-				})
-			)
+			await mapLimit(files, SCAN_CONCURRENCY, async (fileName): Promise<ChapterFile | undefined> => {
+				const parsed = parseChapterFileName(fileName);
+				if (!parsed) {
+					return undefined;
+				}
+				const contentTitle = await this.readChapterContentTitle(this.chapterPath(book, fileName, dirName));
+				return { ...parsed, title: contentTitle ?? parsed.title, fileName, volumeDir: dirName };
+			})
 		).filter((chapter): chapter is ChapterFile => chapter !== undefined);
 		chapters.sort(bySeq);
 		return { name: dirName, dirName, chapters };
@@ -539,7 +687,41 @@ export class LibraryService {
 		return volumes.flatMap((volume) => volume.chapters);
 	}
 
-	/** 按进度键（分卷相对路径；兼容旧格式文件名）定位章节。 */
+	/** 章节数：只扫目录不读正文，供书架为大量书目显示计数（listChapters 会逐章读首行标题，代价高得多）。 */
+	async countChapters(book: BookInfo): Promise<number> {
+		let entries: Dirent[];
+		try {
+			entries = await fs.readdir(path.join(book.dir, CHAPTERS_DIR), { withFileTypes: true });
+		} catch {
+			return 0;
+		}
+		const isChapter = (name: string): boolean => parseChapterFileName(name) !== undefined;
+		const rootCount = entries.filter((entry) => !entry.isDirectory() && isChapter(entry.name)).length;
+		const volumeDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+		return (
+			rootCount +
+			(await mapLimit(volumeDirs, SCAN_CONCURRENCY, async (dirName) => {
+				try {
+					const files = await fs.readdir(path.join(book.dir, CHAPTERS_DIR, dirName));
+					return files.filter(isChapter).length;
+				} catch {
+					return 0;
+				}
+			})).reduce((sum, count) => sum + count, 0)
+		);
+	}
+
+	/** 批量章节数（键为书目录），并发受限，供书架视图一次性补齐大量书的计数。 */
+	async listChapterCounts(books: BookInfo[]): Promise<Map<string, number>> {
+		const pairs = await mapLimit(
+			books,
+			SCAN_CONCURRENCY,
+			async (book): Promise<[string, number]> => [book.dir, await this.countChapters(book)]
+		);
+		return new Map(pairs);
+	}
+
+	/** 按进度键（分卷相对路径；兼容旧格式文件名）定位章节；相对路径优先，避免同名章节跨卷误配。 */
 	async findChapterByProgress(book: BookInfo, progressKey: string): Promise<ChapterFile | undefined> {
 		const chapters = await this.listChapters(book);
 		return (
@@ -553,13 +735,13 @@ export class LibraryService {
 		return path.join(book.dir, VERSIONS_DIR, chapter.volumeDir ?? '', chapter.fileName.replace(/\.md$/, ''));
 	}
 
-	/** 章节某个版本文件的绝对路径。 */
+	/** 章节某个版本文件的绝对路径（版本名统一清洗，防路径穿越）。 */
 	chapterVersionPath(
 		book: BookInfo,
 		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
 		versionName: string
 	): string {
-		return path.join(this.versionsDirPath(book, chapter), `${versionName}.md`);
+		return path.join(this.versionsDirPath(book, chapter), `${sanitizeFileTitle(versionName)}.md`);
 	}
 
 	/** 目录内生成不冲突的文件基名（重名自动加 -2、-3…）。 */
@@ -697,7 +879,7 @@ export class LibraryService {
 	async listEntries(book: BookInfo, subDir: string, categoryPath?: string): Promise<EntryFile[]> {
 		let entries: string[];
 		try {
-			entries = await fs.readdir(path.join(book.dir, subDir, categoryPath ?? ''));
+			entries = await fs.readdir(path.join(book.dir, subDir, safeCategoryPath(categoryPath) ?? ''));
 		} catch {
 			return [];
 		}
@@ -721,8 +903,9 @@ export class LibraryService {
 
 	/** 某个分类（或条目根目录）下的直接子分类。 */
 	async listChildCategories(book: BookInfo, subDir: string, categoryPath?: string): Promise<EntryCategory[]> {
-		const names = await this.readSubDirNames(path.join(book.dir, subDir, categoryPath ?? ''));
-		return names.map((name) => ({ name, path: categoryPath ? `${categoryPath}/${name}` : name }));
+		const safe = safeCategoryPath(categoryPath);
+		const names = await this.readSubDirNames(path.join(book.dir, subDir, safe ?? ''));
+		return names.map((name) => ({ name, path: safe ? `${safe}/${name}` : name }));
 	}
 
 	/** 条目根目录下的全部分类（递归展开多级，按路径排序）。 */
@@ -735,7 +918,7 @@ export class LibraryService {
 
 	/** 新建分类目录（可多级）并提交 git 快照，返回清洗后的相对路径。 */
 	async createCategory(book: BookInfo, subDir: string, categoryPath: string): Promise<string> {
-		const safePath = sanitizeCategoryPath(categoryPath);
+		const safePath = sanitizeRelativePath(categoryPath);
 		if (!safePath) {
 			throw new Error('分类名不能为空');
 		}
@@ -757,12 +940,13 @@ export class LibraryService {
 		categoryPath: string,
 		newName: string
 	): Promise<string> {
-		const parent = categoryPath.includes('/') ? categoryPath.slice(0, categoryPath.lastIndexOf('/')) : '';
+		const source = safeCategoryPath(categoryPath) ?? '';
+		const parent = source.includes('/') ? source.slice(0, source.lastIndexOf('/')) : '';
 		const targetPath = parent ? `${parent}/${sanitizeFileTitle(newName)}` : sanitizeFileTitle(newName);
-		if (targetPath === categoryPath) {
+		if (targetPath === source) {
 			return targetPath;
 		}
-		const oldDir = path.join(book.dir, subDir, categoryPath);
+		const oldDir = path.join(book.dir, subDir, source);
 		const newDir = path.join(book.dir, subDir, targetPath);
 		if (!(await pathExists(oldDir))) {
 			throw new Error(`分类「${categoryPath}」不存在`);
@@ -771,14 +955,18 @@ export class LibraryService {
 			throw new Error(`分类「${targetPath}」已存在`);
 		}
 		await vscode.workspace.fs.rename(vscode.Uri.file(oldDir), vscode.Uri.file(newDir));
-		await this.commitAndRefresh(`重命名分类 ${subDir}/${categoryPath} → ${targetPath}`);
+		await this.commitAndRefresh(`重命名分类 ${subDir}/${source} → ${targetPath}`);
 		return targetPath;
 	}
 
 	/** 删除分类目录（含其中全部条目与子分类）并提交 git 快照。 */
 	async deleteCategory(book: BookInfo, subDir: string, categoryPath: string): Promise<void> {
-		await fs.rm(path.join(book.dir, subDir, categoryPath), { recursive: true, force: true });
-		await this.commitAndRefresh(`删除分类 ${subDir}/${categoryPath}`);
+		const safe = safeCategoryPath(categoryPath);
+		if (!safe) {
+			return;
+		}
+		await fs.rm(path.join(book.dir, subDir, safe), { recursive: true, force: true });
+		await this.commitAndRefresh(`删除分类 ${subDir}/${safe}`);
 	}
 
 	/** 读取 元数据.md 并解析；文件缺失时返回 undefined。 */
@@ -821,7 +1009,7 @@ export class LibraryService {
 		await fs.writeFile(path.join(dir, META_FILE), buildMetadataMarkdown(dirName), 'utf8');
 		await commitAll(root, `新建《${dirName}》`);
 		await this.setCurrentBook(dir);
-		this._onDidChange.fire();
+		this.scheduleRefresh();
 		return { name: dirName, dir };
 	}
 
@@ -837,8 +1025,25 @@ export class LibraryService {
 		const result = await createBookFromText(root, rawName, text);
 		await commitAll(root, `导入《${result.book.name}》（${result.chapterCount}章）`);
 		await this.setCurrentBook(result.book.dir);
-		this._onDidChange.fire();
+		this.scheduleRefresh();
 		return result;
+	}
+
+	/** 导出整本书为单个纯文本：按阅读顺序拼接各章正文（Markdown 转纯文本），多卷时在卷首补卷名。 */
+	async exportBookText(book: BookInfo): Promise<string> {
+		const volumes = await this.listVolumes(book);
+		const withVolumeName = volumes.length > 1;
+		const blocks: string[] = [];
+		for (const volume of volumes) {
+			if (withVolumeName) {
+				blocks.push(volume.name);
+			}
+			const texts = await mapLimit(volume.chapters, SCAN_CONCURRENCY, (chapter) =>
+				fs.readFile(this.chapterPath(book, chapter.fileName, chapter.volumeDir), 'utf8')
+			);
+			blocks.push(...texts.map(mdToPlainText));
+		}
+		return `${blocks.filter((block) => block.length > 0).join('\n\n')}\n`;
 	}
 
 	async removeBook(book: BookInfo): Promise<void> {
@@ -849,12 +1054,12 @@ export class LibraryService {
 			await this.setCurrentBook(undefined);
 		}
 		await this.clearProgress(book.dir);
-		this._onDidChange.fire();
+		this.scheduleRefresh();
 	}
 
 	/** 在 世界书/角色卡/笔记 下新建条目 md（分类目录不存在则创建，已存在同名文件则不覆盖），返回文件路径。 */
 	async createEntry(book: BookInfo, subDir: string, name: string, categoryPath?: string): Promise<string> {
-		const safeCategory = categoryPath ? sanitizeCategoryPath(categoryPath) : undefined;
+		const safeCategory = categoryPath ? sanitizeRelativePath(categoryPath) : undefined;
 		const dir = path.join(book.dir, subDir, safeCategory ?? '');
 		await fs.mkdir(dir, { recursive: true });
 		const filePath = path.join(dir, `${sanitizeFileTitle(name)}.md`);
@@ -867,15 +1072,16 @@ export class LibraryService {
 
 	/** 删除条目/笔记 md 文件并提交 git 快照。 */
 	async removeEntry(book: BookInfo, subDir: string, fileName: string): Promise<void> {
-		await fs.rm(path.join(book.dir, subDir, fileName), { force: true });
-		await closeFileTabs(path.join(book.dir, subDir, fileName));
+		const filePath = path.join(book.dir, subDir, path.basename(fileName));
+		await fs.rm(filePath, { force: true });
+		await closeFileTabs(filePath);
 		await this.commitAndRefresh(`删除 ${subDir}/${fileName}`);
 	}
 
 	/** 删除章节 md 及其摘要镜像，同步重写相邻章导航，并提交 git 快照。 */
 	async removeChapter(book: BookInfo, chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): Promise<void> {
 		const chapters = await this.listChapters(book);
-		const index = chapters.findIndex((c) => chapterRelPath(c) === chapterRelPath(chapter));
+		const index = chapters.findIndex((c) => sameChapter(c, chapter));
 		const prev = index > 0 ? chapters[index - 1] : undefined;
 		const prevPrev = index > 1 ? chapters[index - 2] : undefined;
 		const next = index >= 0 && index < chapters.length - 1 ? chapters[index + 1] : undefined;
@@ -903,10 +1109,10 @@ export class LibraryService {
 		await fs.rm(summaryFile, { force: true });
 		await fs.rm(this.versionsDirPath(book, chapter), { recursive: true, force: true });
 		await closeFileTabs(summaryFile);
+		await closeFileTabs(chapterFile);
 		// 进度指向被删章时迁移到相邻章（prev 优先），无相邻章则清除
 		const rel = chapterRelPath(chapter);
 		if (this.getProgress(book.dir) === rel) {
-			// 进度迁移到相邻章（prev 优先），无相邻章则清除
 			const neighbor = prev ?? next;
 			if (neighbor) {
 				await this.setProgress(book.dir, chapterRelPath(neighbor));
@@ -914,7 +1120,6 @@ export class LibraryService {
 				await this.clearProgress(book.dir);
 			}
 		}
-		await closeFileTabs(chapterFile);
 		await this.updateNotesChapterRef(book, rel, undefined);
 		await this.commitAndRefresh(`删除章节 ${chapterRelPath(chapter)}`);
 	}
@@ -970,13 +1175,11 @@ export class LibraryService {
 				return md
 					.replace(NOTE_CHAPTER_LINE_RE, () => `chapter: ${JSON.stringify(ref.relPath)}`)
 					.replace(
-						/^> 关联章节：.*$/m,
+						NOTE_CHAPTER_LINK_LINE_RE,
 						() => `> 关联章节：[${escapeMdLinkText(ref.title)}](<${prefix}${CHAPTERS_DIR}/${ref.relPath}>)`
 					);
 			}
-			return md
-				.replace(/^chapter:[^\n]*\n?/m, '')
-				.replace(/^> 关联章节：[^\n]*\n?/m, '');
+			return md.replace(/^chapter:[^\n]*\n?/m, '').replace(/^> 关联章节：[^\n]*\n?/m, '');
 		});
 	}
 
@@ -1161,13 +1364,77 @@ export class LibraryService {
 		if (await pathExists(newPath)) {
 			throw new Error(`「${newFileName}」已存在`);
 		}
-		await vscode.workspace.fs.rename(vscode.Uri.file(path.join(dir, fileName)), vscode.Uri.file(newPath));
+		await vscode.workspace.fs.rename(
+			vscode.Uri.file(path.join(dir, path.basename(fileName))),
+			vscode.Uri.file(newPath)
+		);
 		await this.commitAndRefresh(`重命名 ${subDir}/${fileName} → ${newFileName}`);
 		return newFileName;
 	}
 
+	/** 移动条目/笔记到同一根目录下的另一个分类（categoryPath / targetCategoryPath 为 undefined 表示根目录，目标分类不存在则创建）。 */
+	async moveEntry(
+		book: BookInfo,
+		rootDir: string,
+		categoryPath: string | undefined,
+		fileName: string,
+		targetCategoryPath: string | undefined
+	): Promise<void> {
+		const fromRel = this.entryRelPath(rootDir, safeCategoryPath(categoryPath), fileName);
+		const to = safeCategoryPath(targetCategoryPath);
+		const targetRel = this.entryRelPath(rootDir, to, fileName);
+		if (fromRel === targetRel) {
+			throw new Error('条目已在目标分类中');
+		}
+		const fromPath = path.join(book.dir, fromRel);
+		if (!(await pathExists(fromPath))) {
+			throw new Error(`条目「${fileName}」不存在`);
+		}
+		const targetDir = path.join(book.dir, rootDir, to ?? '');
+		if (await pathExists(path.join(targetDir, fileName))) {
+			throw new Error(`目标分类中已存在「${fileName}」`);
+		}
+		await fs.mkdir(targetDir, { recursive: true });
+		await vscode.workspace.fs.rename(vscode.Uri.file(fromPath), vscode.Uri.file(path.join(targetDir, fileName)));
+		if (rootDir === NOTES_DIR) {
+			await this.rewriteNoteChapterLink(path.join(targetDir, fileName), to);
+		}
+		await this.commitAndRefresh(`移动 ${fromRel} → ${targetRel}`);
+	}
+
+	/** 条目根目录与分类路径拼出的相对路径。 */
+	private entryRelPath(rootDir: string, categoryPath: string | undefined, fileName: string): string {
+		return categoryPath ? `${rootDir}/${categoryPath}/${fileName}` : `${rootDir}/${fileName}`;
+	}
+
+	/** 笔记换分类后重算「关联章节」链接的相对前缀（关联章节不变，只是从 笔记/ 到 章节/ 的层级变了）。 */
+	private async rewriteNoteChapterLink(filePath: string, categoryPath: string | undefined): Promise<void> {
+		let md: string;
+		try {
+			md = await fs.readFile(filePath, 'utf8');
+		} catch {
+			return;
+		}
+		const chapterRel = NOTE_CHAPTER_FM_RE.exec(md)?.[1];
+		if (!chapterRel) {
+			return;
+		}
+		const prefix = '../'.repeat((categoryPath ? categoryPath.split('/').length : 0) + 1);
+		const linkText = NOTE_CHAPTER_LINK_RE.exec(md)?.[1] ?? path.basename(chapterRel, '.md');
+		const updated = md.replace(
+			NOTE_CHAPTER_LINK_LINE_RE,
+			() => `> 关联章节：[${linkText}](<${prefix}${CHAPTERS_DIR}/${chapterRel}>)`
+		);
+		if (updated !== md) {
+			await fs.writeFile(filePath, updated, 'utf8');
+		}
+	}
+
 	/** 新建章节 md（全局序号接最大值），补上前后导航并重写全书导航；返回文件名。 */
 	async createChapter(book: BookInfo, title: string, volumeDir?: string): Promise<string> {
+		if (volumeDir) {
+			this.assertVolumeName(volumeDir);
+		}
 		const chapters = await this.listChapters(book);
 		const seq = chapters.reduce((max, c) => Math.max(max, c.seq), 0) + 1;
 		const fileName = chapterFileName(seq, title);
@@ -1186,7 +1453,7 @@ export class LibraryService {
 	): Promise<{ fileName: string; renumbered: number }> {
 		const chapters = await this.listChapters(book);
 		const anchor = 'after' in position ? position.after : position.before;
-		const at = chapters.findIndex((c) => chapterRelPath(c) === chapterRelPath(anchor));
+		const at = chapters.findIndex((c) => sameChapter(c, anchor));
 		if (at < 0) {
 			throw new Error(`找不到章节「${anchor.fileName}」`);
 		}
@@ -1280,6 +1547,9 @@ export class LibraryService {
 		chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>,
 		targetVolumeDir: string | undefined
 	): Promise<void> {
+		if (targetVolumeDir) {
+			this.assertVolumeName(targetVolumeDir);
+		}
 		const fromDir = chapter.volumeDir ?? '';
 		const targetDir = targetVolumeDir ?? '';
 		if (fromDir === targetDir) {
@@ -1354,16 +1624,19 @@ export class LibraryService {
 	async listChapterSummaryStates(book: BookInfo, volumes?: ChapterVolume[]): Promise<Map<string, SummaryState>> {
 		const list = volumes ?? (await this.listVolumes(book));
 		const states = new Map<string, SummaryState>();
-		await Promise.all(
-			list.flatMap((volume) => volume.chapters).map(async (chapter) => {
+		await mapLimit(
+			list.flatMap((volume) => volume.chapters),
+			SCAN_CONCURRENCY,
+			async (chapter) => {
 				const summaryMtime = await this.mtime(this.summaryPath(book, chapter.fileName, chapter.volumeDir));
 				if (summaryMtime === undefined) {
 					states.set(chapterRelPath(chapter), 'missing');
 					return;
 				}
-				const chapterMtime = await this.newestMtime([this.chapterPath(book, chapter.fileName, chapter.volumeDir)]);
+				const chapterMtime =
+					(await this.mtime(this.chapterPath(book, chapter.fileName, chapter.volumeDir))) ?? 0;
 				states.set(chapterRelPath(chapter), chapterMtime > summaryMtime ? 'stale' : 'ok');
-			})
+			}
 		);
 		return states;
 	}
@@ -1425,18 +1698,16 @@ export class LibraryService {
 				state: 'missing',
 			});
 		}
-		await Promise.all(
-			intervals.map(async (interval) => {
-				const summaryMtime = await this.mtime(path.join(book.dir, INTERVAL_SUMMARIES_DIR, interval.fileName));
-				if (summaryMtime === undefined) {
-					return;
-				}
-				const newest = await this.newestMtime(
-					interval.chapters.map((c) => this.chapterPath(book, c.fileName, c.volumeDir))
-				);
-				interval.state = newest > summaryMtime ? 'stale' : 'ok';
-			})
-		);
+		await mapLimit(intervals, SCAN_CONCURRENCY, async (interval) => {
+			const summaryMtime = await this.mtime(path.join(book.dir, INTERVAL_SUMMARIES_DIR, interval.fileName));
+			if (summaryMtime === undefined) {
+				return;
+			}
+			const newest = await this.newestMtime(
+				interval.chapters.map((c) => this.chapterPath(book, c.fileName, c.volumeDir))
+			);
+			interval.state = newest > summaryMtime ? 'stale' : 'ok';
+		});
 		return intervals;
 	}
 
@@ -1453,7 +1724,7 @@ export class LibraryService {
 
 	/** 新建笔记 md（已存在则不覆盖），可选分类路径（可多级）与关联章节，返回文件路径。 */
 	async createNote(book: BookInfo, name: string, categoryPath?: string, chapter?: ChapterFile): Promise<string> {
-		const safeCategory = categoryPath ? sanitizeCategoryPath(categoryPath) : undefined;
+		const safeCategory = categoryPath ? sanitizeRelativePath(categoryPath) : undefined;
 		const dir = path.join(book.dir, NOTES_DIR, safeCategory ?? '');
 		await fs.mkdir(dir, { recursive: true });
 		const filePath = path.join(dir, `${sanitizeFileTitle(name)}.md`);
@@ -1572,7 +1843,7 @@ export class LibraryService {
 			return;
 		}
 		await this.context.globalState.update(CURRENT_BOOK_KEY, dir);
-		this._onDidChange.fire();
+		this.scheduleRefresh();
 	}
 
 	/** 阅读进度：globalState 中以书路径为 key 记录章节文件名。 */
@@ -1587,7 +1858,7 @@ export class LibraryService {
 		}
 		progress[bookDir] = fileName;
 		await this.context.globalState.update(PROGRESS_KEY, progress);
-		this._onDidChange.fire();
+		this.scheduleRefresh();
 	}
 
 	/** 清除某书的阅读进度。 */
@@ -1620,7 +1891,7 @@ export class LibraryService {
 			}
 			this.debounce = setTimeout(() => {
 				void this.flushPendingChapterSync();
-				this._onDidChange.fire();
+				this.scheduleRefresh();
 			}, 300);
 		};
 		this.watcher.onDidCreate(onEvent);

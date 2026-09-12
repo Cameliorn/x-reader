@@ -220,14 +220,3 @@ function normalizeTitle(title: string): string {
 		.replace(/\s*[.．·…—\-~]*\s*[0-9]{1,5}\s*$/, '')
 		.replace(/[\s：:、.．\-—]/g, '');
 }
-
-/** 提取某一章的正文文本（不含标题行）。 */
-export function getChapterText(text: string, chapter: Chapter): string {
-	const lines = text.split(/\r\n|\r|\n/);
-	const end = Math.min(chapter.endLine, lines.length - 1);
-	const body = [];
-	for (let i = chapter.startLine + 1; i <= end; i++) {
-		body.push(lines[i]);
-	}
-	return body.join('\n');
-}

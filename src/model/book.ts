@@ -20,9 +20,9 @@ export interface BookInfo {
 
 /** 子书架：自定义书籍分组，books 存书文件夹名的链接（不复制书）。 */
 export interface Shelf {
-	/** 子书架名 */
+	/** 子书架路径，多级用 / 连接（如 题材/同人/XXX） */
 	name: string;
-	/** 收录的书文件夹名列表 */
+	/** 该层直接收录的书文件夹名列表 */
 	books: string[];
 }
 

@@ -1,7 +1,13 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { mdToPlainText, promptInstallAudio, readChapterText, readCharacterVoiceConfig, resolveChapter, speakViaAudio } from './audio';
 import type { BookInfo, ChapterFile, ChapterVolume, IntervalSummary } from './model/book';
+import {
+	promptInstallAudio,
+	readChapterText,
+	readCharacterVoiceConfig,
+	resolveChapter,
+	speakViaAudio,
+} from './services/audio';
 import { commitAll, resetHistory } from './services/git';
 import {
 	CARDS_DIR,
@@ -11,12 +17,16 @@ import {
 	closeFileTabs,
 	INTERVAL_SUMMARIES_DIR,
 	LibraryService,
+	matchesProgress,
 	NOTES_DIR,
 	parseChapterFilePath,
 	PRIMARY_KEEP_VERSION_NAME,
+	sameChapter,
+	shelfLeafName,
+	shelfParentPath,
 	WORLD_DIR,
 } from './services/library';
-import { parseChapterFileName } from './services/markdown';
+import { mdToPlainText, parseChapterFileName } from './services/markdown';
 import { registerAgentTools } from './tools';
 import { BookshelfProvider, type BookshelfItem } from './views/bookshelfProvider';
 import { ChapterProvider, type ChapterVersionNode } from './views/chapterProvider';
@@ -115,7 +125,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		const libraryPath = library.getLibraryPath();
 		const book = library.getCurrentBook();
 		setContext('noLibrary', !libraryPath);
-		setContext('noBooks', Boolean(libraryPath) && (await library.listBooks()).length === 0);
+		setContext('noBooks', Boolean(libraryPath) && !(await library.hasBooks()));
 		setContext('noBook', !book);
 
 		const titledViews: { view: { title?: string }; name: string }[] = [
@@ -161,9 +171,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		setContext('emptyNotes', emptyNotes);
 
 		const progress = library.getProgress(book.dir);
-		const index = progress
-			? chapters.findIndex((c) => chapterRelPath(c) === progress || c.fileName === progress)
-			: -1;
+		const index = progress ? chapters.findIndex((c) => matchesProgress(c, progress)) : -1;
 		statusBar.text =
 			index >= 0 ? `${book.name} · ${index + 1}/${chapters.length}` : book.name;
 		statusBar.show();
@@ -238,9 +246,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		// 侧边栏标题以内容首行 `# 标题` 为准，与目录展示一致；调用方已知章节时跳过重复扫描
 		const target =
 			chapterHint ??
-			(await library.listChapters(bookAt(bookDir))).find(
-				(c) => chapterRelPath(c) === chapterRelPath({ fileName, volumeDir })
-			);
+			(await library.listChapters(bookAt(bookDir))).find((c) => sameChapter(c, { fileName, volumeDir }));
 		void chaptersView
 			.reveal(
 				{ seq: parsed?.seq ?? 0, title: target?.title ?? parsed?.title ?? fileName, fileName, volumeDir },
@@ -303,7 +309,10 @@ export function activate(context: vscode.ExtensionContext): void {
 		if (picked.value !== undefined) {
 			return picked.value;
 		}
-		const input = await vscode.window.showInputBox({ title, prompt: vscode.l10n.t('Category name') });
+		const input = await vscode.window.showInputBox({
+			title,
+			prompt: vscode.l10n.t('Category path (use / for sub-levels, e.g. Geography/City-States)'),
+		});
 		return input === undefined ? undefined : input.trim();
 	};
 
@@ -372,6 +381,20 @@ export function activate(context: vscode.ExtensionContext): void {
 	): { book: BookInfo | undefined; categoryPath: string | undefined } =>
 		arg && 'rootDir' in arg ? { book: undefined, categoryPath: arg.path } : { book: arg, categoryPath: undefined };
 
+	/** 弹出书目选择框（QuickPick 自带关键词过滤，输入即搜索定位）；无书时提示并返回 undefined。 */
+	const pickBook = async (title: string, placeHolder: string): Promise<BookInfo | undefined> => {
+		const books = await library.listBooks();
+		if (books.length === 0) {
+			void vscode.window.showInformationMessage(vscode.l10n.t('The library is empty. Import or create a novel.'));
+			return undefined;
+		}
+		const picked = await vscode.window.showQuickPick(
+			books.map((book) => ({ label: book.name, book })),
+			{ title, placeHolder }
+		);
+		return picked?.book;
+	};
+
 	/** 弹出名称输入框（value 为初始值）；取消或留空时返回 undefined。 */
 	const promptName = async (title: string, prompt: string, value?: string): Promise<string | undefined> => {
 		const name = await vscode.window.showInputBox({ title, prompt, value });
@@ -398,6 +421,23 @@ export function activate(context: vscode.ExtensionContext): void {
 		return answer === deleteLabel;
 	};
 
+	/** 执行写操作，返回是否成功；失败（重名、目标不存在等）时按 template 提示具体原因。 */
+	const notifyFailure = async (template: string, action: () => Promise<unknown>): Promise<boolean> => {
+		try {
+			await action();
+			return true;
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			// 函数形式替换：错误信息里的 $& 等不被当作替换模式
+			void vscode.window.showErrorMessage(template.replace('{0}', () => detail));
+			return false;
+		}
+	};
+
+	/** 执行新建类操作；失败（重名、目标不存在等）时提示具体原因。 */
+	const createOrNotify = (action: () => Promise<unknown>): Promise<boolean> =>
+		notifyFailure(vscode.l10n.t('Failed to create: {0}'), action);
+
 	/** 条目/笔记的重命名处理器：树项传入同样的节点信息，仅弹窗标题不同。 */
 	const renameEntryHandler =
 		(title: string) =>
@@ -409,6 +449,46 @@ export function activate(context: vscode.ExtensionContext): void {
 					library.renameEntry(bookAt(arg.bookDir), arg.subDir, arg.fileName, name)
 				);
 			};
+
+	/** 条目/笔记换分类：目标为同一根目录下的其它分类，根目录即取消分类。 */
+	const moveEntryHandler = async (arg?: EntryNode): Promise<void> => {
+		const book = library.getCurrentBook();
+		if (!book || !arg) {
+			return;
+		}
+		const current = arg.subDir === arg.rootDir ? undefined : arg.subDir.slice(arg.rootDir.length + 1);
+		const categories = await library.listCategories(book, arg.rootDir);
+		const targets = [
+			{ label: vscode.l10n.t('(root)'), target: undefined as string | undefined },
+			...categories.map((category) => ({ label: category.path, target: category.path as string | undefined })),
+		].filter((choice) => choice.target !== current);
+		const pick = await vscode.window.showQuickPick(targets, {
+			title: vscode.l10n.t('Move to Category'),
+			placeHolder: vscode.l10n.t('Select target category'),
+		});
+		if (!pick) {
+			return;
+		}
+		await notifyFailure(vscode.l10n.t('Move failed: {0}'), () =>
+			library.moveEntry(book, arg.rootDir, current, arg.fileName, pick.target)
+		);
+	};
+
+	/** 新建分类：三处条目视图的标题栏按钮（建在根目录）与分类节点右键（建为子分类）共用，名称支持多级路径。 */
+	const createCategory = async (rootDir: string, parentPath?: string): Promise<void> => {
+		const book = library.getCurrentBook();
+		if (!book) {
+			return;
+		}
+		const name = await promptName(
+			parentPath ? vscode.l10n.t('New Sub-category') : vscode.l10n.t('New Category'),
+			vscode.l10n.t('Category path (use / for sub-levels, e.g. Geography/City-States)')
+		);
+		if (!name) {
+			return;
+		}
+		await createOrNotify(() => library.createCategory(book, rootDir, parentPath ? `${parentPath}/${name}` : name));
+	};
 
 	/** 朗读章节正文（无参数时回退到当前章节）；x-audio 缺失时引导安装。 */
 	const speakChapter = async (
@@ -500,36 +580,24 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!name) {
 				return;
 			}
-			try {
+			await createOrNotify(async () => {
 				const book = await library.createBook(name);
 				await vscode.commands.executeCommand('xReader.openBook', book.dir);
-			} catch (error) {
-				void vscode.window.showErrorMessage(
-					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
-				);
+			});
+		}),
+		vscode.commands.registerCommand('xReader.searchBook', async () => {
+			const book = await pickBook(vscode.l10n.t('Search Books'), vscode.l10n.t('Type a book name to search'));
+			if (book) {
+				await vscode.commands.executeCommand('xReader.openBook', book);
 			}
 		}),
 		vscode.commands.registerCommand('xReader.openBook', async (bookDir?: string | BookInfo) => {
 			let dir = typeof bookDir === 'string' ? bookDir : (bookDir?.dir ?? library.getCurrentBook()?.dir);
 			if (!dir) {
-				const books = await library.listBooks();
-				if (books.length === 0) {
-					void vscode.window.showInformationMessage(
-						vscode.l10n.t('The library is empty. Import or create a novel.')
-					);
+				dir = (await pickBook(vscode.l10n.t('Open Book'), vscode.l10n.t('Choose a book to open')))?.dir;
+				if (!dir) {
 					return;
 				}
-				const picked = await vscode.window.showQuickPick(
-					books.map((b) => ({ label: b.name, book: b })),
-					{
-						title: vscode.l10n.t('Open Book'),
-						placeHolder: vscode.l10n.t('Choose a book to open'),
-					}
-				);
-				if (!picked) {
-					return;
-				}
-				dir = picked.book.dir;
 			}
 			const book = bookAt(dir);
 			const chapters = await library.listChapters(book);
@@ -581,6 +649,31 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand('xReader.prevChapter', () => openNeighbor(-1)),
 		vscode.commands.registerCommand('xReader.nextChapter', () => openNeighbor(1)),
+		vscode.commands.registerCommand('xReader.exportBook', async () => {
+			const book = await pickBook(vscode.l10n.t('Export Novel'), vscode.l10n.t('Choose a book to export'));
+			if (!book) {
+				return;
+			}
+			const target = await vscode.window.showSaveDialog({
+				title: vscode.l10n.t('Export Novel'),
+				defaultUri: vscode.Uri.file(path.join(path.dirname(book.dir), `${book.name}.txt`)),
+				filters: { [vscode.l10n.t('Text files')]: ['txt'] },
+			});
+			if (!target) {
+				return;
+			}
+			try {
+				const text = await library.exportBookText(book);
+				await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
+			} catch (error) {
+				const detail = error instanceof Error ? error.message : String(error);
+				void vscode.window.showErrorMessage(vscode.l10n.t('Failed to export: {0}', detail));
+				return;
+			}
+			void vscode.window.showInformationMessage(
+				vscode.l10n.t('Exported “{0}” to {1}', book.name, target.fsPath)
+			);
+		}),
 		vscode.commands.registerCommand('xReader.removeBook', async (book?: BookInfo) => {
 			if (!book) {
 				return;
@@ -589,18 +682,17 @@ export function activate(context: vscode.ExtensionContext): void {
 				await library.removeBook(book);
 			}
 		}),
-		vscode.commands.registerCommand('xReader.newShelf', async () => {
-			const name = await promptName(vscode.l10n.t('New Sub-shelf'), vscode.l10n.t('Sub-shelf name'));
+		vscode.commands.registerCommand('xReader.newShelf', async (node?: BookshelfItem) => {
+			// 从子书架节点的右键菜单调用时，新子书架挂在该节点下（可多层嵌套）
+			const parent = node && node.kind === 'shelf' && !node.isDefault ? node.name : undefined;
+			const name = await promptName(
+				vscode.l10n.t('New Sub-shelf'),
+				vscode.l10n.t('Sub-shelf name (use “/” for multiple levels)')
+			);
 			if (!name) {
 				return;
 			}
-			try {
-				await library.createShelf(name);
-			} catch (error) {
-				void vscode.window.showErrorMessage(
-					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
-				);
-			}
+			await createOrNotify(() => library.createShelf(parent ? `${parent}/${name}` : name));
 		}),
 		vscode.commands.registerCommand('xReader.renameShelf', async (node?: BookshelfItem) => {
 			if (!node || node.kind !== 'shelf' || node.isDefault) {
@@ -608,7 +700,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			await renameWithInput(
 				vscode.l10n.t('Rename Sub-shelf'),
-				node.name,
+				shelfLeafName(node.name),
 				(name) => library.renameShelf(node.name, name),
 				vscode.l10n.t('Sub-shelf name')
 			);
@@ -617,7 +709,16 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!node || node.kind !== 'shelf' || node.isDefault) {
 				return;
 			}
-			if (await confirmDelete(vscode.l10n.t('Delete sub-shelf “{0}”? (Books will not be deleted)', node.name))) {
+			const nested = (await library.listShelves()).filter((s) => s.name.startsWith(`${node.name}/`)).length;
+			const message =
+				nested > 0
+					? vscode.l10n.t(
+						'Delete sub-shelf “{0}” and its {1} nested sub-shelves? (Books will not be deleted)',
+						node.name,
+						nested
+					)
+					: vscode.l10n.t('Delete sub-shelf “{0}”? (Books will not be deleted)', node.name);
+			if (await confirmDelete(message)) {
 				await library.deleteShelf(node.name);
 			}
 		}),
@@ -631,8 +732,12 @@ export function activate(context: vscode.ExtensionContext): void {
 				[
 					...shelves
 						.filter((s) => !s.books.includes(target.name))
-						.map((s) => ({ label: s.name, shelfName: s.name as string | undefined })),
-					{ label: vscode.l10n.t('New Sub-shelf…'), shelfName: undefined },
+						.map((s) => ({
+							label: shelfLeafName(s.name),
+							description: shelfParentPath(s.name),
+							shelfPath: s.name as string | undefined,
+						})),
+					{ label: vscode.l10n.t('New Sub-shelf…'), shelfPath: undefined },
 				],
 				{
 					title: vscode.l10n.t('Add to Sub-shelf'),
@@ -642,22 +747,18 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!pick) {
 				return;
 			}
-			if (pick.shelfName) {
-				await library.addBookToShelf(pick.shelfName, target.name);
+			if (pick.shelfPath) {
+				await library.addBookToShelf(pick.shelfPath, target.name);
 				return;
 			}
-			const name = await promptName(vscode.l10n.t('New Sub-shelf'), vscode.l10n.t('Sub-shelf name'));
+			const name = await promptName(
+				vscode.l10n.t('New Sub-shelf'),
+				vscode.l10n.t('Sub-shelf name (use “/” for multiple levels)')
+			);
 			if (!name) {
 				return;
 			}
-			try {
-				await library.createShelf(name);
-				await library.addBookToShelf(name, target.name);
-			} catch (error) {
-				void vscode.window.showErrorMessage(
-					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
-				);
-			}
+			await createOrNotify(async () => library.addBookToShelf(await library.createShelf(name), target.name));
 		}),
 		vscode.commands.registerCommand('xReader.addShelfBook', async (node?: BookshelfItem) => {
 			if (!node || node.kind !== 'shelf' || node.isDefault) {
@@ -724,14 +825,10 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!name) {
 				return;
 			}
-			try {
+			await createOrNotify(async () => {
 				const filePath = await library.createChapterVersion(book, chapter, name);
 				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
-			} catch (error) {
-				void vscode.window.showErrorMessage(
-					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
-				);
-			}
+			});
 		}),
 		vscode.commands.registerCommand('xReader.openChapterVersion', async (node?: ChapterVersionNode) => {
 			const book = library.getCurrentBook();
@@ -813,8 +910,13 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!pick) {
 				return;
 			}
-			await library.moveChapter(book, chapter, pick.target);
-			await openChapter(book.dir, pick.target, chapter.fileName);
+			// 移动失败（如目标卷已有同名章节）时保持原状，不再跳转
+			const moved = await notifyFailure(vscode.l10n.t('Move failed: {0}'), () =>
+				library.moveChapter(book, chapter, pick.target)
+			);
+			if (moved) {
+				await openChapter(book.dir, pick.target, chapter.fileName);
+			}
 		}),
 		vscode.commands.registerCommand('xReader.renameBook', async (book?: BookInfo) => {
 			if (!book) {
@@ -830,6 +932,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			'xReader.renameNote',
 			renameEntryHandler(vscode.l10n.t('Rename Note'))
 		),
+		vscode.commands.registerCommand('xReader.moveEntry', moveEntryHandler),
 		vscode.commands.registerCommand('xReader.newVolume', async () => {
 			const book = library.getCurrentBook();
 			if (!book) {
@@ -910,31 +1013,25 @@ export function activate(context: vscode.ExtensionContext): void {
 				await library.removeEntry(bookAt(bookDir), INTERVAL_SUMMARIES_DIR, fileName);
 			}
 		}),
-		// 分类操作：世界书/角色卡/笔记 三处共用（节点自带 rootDir）
+		// 分类操作：世界书/角色卡/笔记 三处共用（节点自带 rootDir）；标题栏按钮各自传根目录
 		vscode.commands.registerCommand('xReader.newCategory', async (node?: EntryCategoryNode) => {
-			const book = library.getCurrentBook();
-			if (!book || !node) {
-				return;
-			}
-			const name = await promptName(vscode.l10n.t('New Sub-category'), vscode.l10n.t('Category name'));
-			if (!name) {
-				return;
-			}
-			try {
-				await library.createCategory(book, node.rootDir, `${node.path}/${name}`);
-			} catch (error) {
-				void vscode.window.showErrorMessage(
-					vscode.l10n.t('Failed to create: {0}', error instanceof Error ? error.message : String(error))
-				);
+			if (node) {
+				await createCategory(node.rootDir, node.path);
 			}
 		}),
+		vscode.commands.registerCommand('xReader.newWorldCategory', () => createCategory(WORLD_DIR)),
+		vscode.commands.registerCommand('xReader.newCharacterCategory', () => createCategory(CARDS_DIR)),
+		vscode.commands.registerCommand('xReader.newNoteCategory', () => createCategory(NOTES_DIR)),
 		vscode.commands.registerCommand('xReader.renameCategory', async (node?: EntryCategoryNode) => {
 			const book = library.getCurrentBook();
 			if (!book || !node) {
 				return;
 			}
-			await renameWithInput(vscode.l10n.t('Rename Category'), node.name, (name) =>
-				library.renameCategory(book, node.rootDir, node.path, name)
+			await renameWithInput(
+				vscode.l10n.t('Rename Category'),
+				node.name,
+				(name) => library.renameCategory(book, node.rootDir, node.path, name),
+				vscode.l10n.t('Category name')
 			);
 		}),
 		vscode.commands.registerCommand('xReader.deleteCategory', async (node?: EntryCategoryNode) => {
@@ -1017,7 +1114,15 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (answer !== clearLabel) {
 				return;
 			}
-			const result = await resetHistory(root, `重建仓库 ${localTimestamp()}`);
+			// 大书库重建要重新入库全部文件（100MB 级别可达数十秒），用通知进度提示避免看起来卡死
+			const result = await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: vscode.l10n.t('Clearing git history and rebuilding from current files…'),
+					cancellable: false,
+				},
+				() => resetHistory(root, `重建仓库 ${localTimestamp()}`)
+			);
 			if (result.ok) {
 				void vscode.window.showInformationMessage(
 					vscode.l10n.t('Git history cleared; a fresh commit was created from the current state')

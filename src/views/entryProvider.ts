@@ -10,10 +10,11 @@ export interface EntryCategoryNode extends EntryCategory {
 	rootDir: string;
 }
 
-/** 条目节点：携带所属书与所在目录（含分类路径）。 */
+/** 条目节点：携带所属书、条目根目录与所在目录（含分类路径）。 */
 export interface EntryNode extends EntryFile {
 	kind: 'entry';
 	bookDir: string;
+	rootDir: string;
 	subDir: string;
 }
 
@@ -69,7 +70,7 @@ export class EntryProvider extends LibraryTreeProvider<EntryTreeNode> {
 	private entryNode(bookDir: string, categoryPath: string | undefined, entry: EntryFile): EntryNode {
 		const { rootDir } = this.options;
 		const subDir = categoryPath ? `${rootDir}/${categoryPath}` : rootDir;
-		return { kind: 'entry', bookDir, subDir, ...entry };
+		return { kind: 'entry', bookDir, rootDir, subDir, ...entry };
 	}
 
 	private categoryItem(node: EntryCategoryNode): vscode.TreeItem {
