@@ -14,6 +14,8 @@ import {
 	INTERVAL_SUMMARIES_DIR,
 	META_FILE,
 	NOTES_DIR,
+	VERSIONS_DIR,
+	VOLUME_SUMMARIES_DIR,
 	WORLD_DIR,
 } from '../services/bookFactory';
 import { commitAll, resetHistory } from '../services/git';
@@ -548,7 +550,7 @@ suite('LibraryService 写操作', () => {
 				await fs.access(path.join(book.dir, CHAPTERS_DIR));
 				const meta = await fs.readFile(path.join(book.dir, META_FILE), 'utf8');
 				assert.ok(meta.includes('title: "新书"'));
-				for (const sub of [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR]) {
+				for (const sub of [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, VOLUME_SUMMARIES_DIR, NOTES_DIR]) {
 					await fs.access(path.join(book.dir, sub, '.gitkeep'));
 				}
 				const second = await service.createBook('新书');
@@ -769,7 +771,7 @@ suite('LibraryService 写操作', () => {
 
 			// 区间摘要：区间内任一章节更新即待维护
 			const [interval] = await service.listIntervalSummaries(book);
-			const intervalPath = await service.ensureIntervalSummary(book, interval);
+			const intervalPath = await service.ensureIntervalSummary(book, interval.startSeq, interval.endSeq);
 			await touch(intervalPath, 30);
 			assert.strictEqual((await service.listIntervalSummaries(book))[0].state, 'ok');
 			await touch(path.join(volDir, first.fileName), 40);
@@ -882,7 +884,7 @@ suite('LibraryService 写操作', () => {
 		}
 	});
 
-	test('renameVolume 同步镜像目录、跨卷导航、进度键与笔记卷前缀', async () => {
+	test('renameVolume 同步镜像目录、版本目录、跨卷导航、进度键与笔记卷前缀', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
@@ -890,6 +892,7 @@ suite('LibraryService 写操作', () => {
 			const chapters = await service.listChapters(book);
 			const first = chapters[0];
 			await service.ensureChapterSummary(book, first);
+			await service.createChapterVersion(book, first, '备选');
 			await service.setProgress(book.dir, chapterRelPath(first));
 			const notePath = await service.createNote(book, '卷笔记', undefined, first);
 
@@ -899,6 +902,11 @@ suite('LibraryService 写操作', () => {
 			assert.ok(await exists(path.join(book.dir, CHAPTERS_DIR, '第零卷', first.fileName)));
 			const summary = path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第零卷', first.fileName);
 			assert.ok(await exists(summary));
+			assert.ok(!(await exists(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷'))));
+			// 版本目录随分卷重命名一起迁移，新卷名下仍能列出
+			const versions = await service.listChapterVersions(book, { fileName: first.fileName, volumeDir: '第零卷' });
+			assert.deepStrictEqual(versions.map((v) => v.fileName), ['备选.md']);
+			assert.ok(!(await exists(path.join(book.dir, VERSIONS_DIR, '第一卷'))));
 			const summaryMd = await fs.readFile(summary, 'utf8');
 			assert.ok(summaryMd.includes(`(<../../章节/第零卷/${first.fileName}>)`));
 			const secondMd = await fs.readFile(path.join(book.dir, CHAPTERS_DIR, '第二卷', chapters[1].fileName), 'utf8');
@@ -912,17 +920,45 @@ suite('LibraryService 写操作', () => {
 		}
 	});
 
-	test('deleteVolume 删除卷后剩余章导航重排，卷内进度迁移到剩余首章', async () => {
+	test('renameVolume 目标卷名已有摘要镜像 / 版本目录时拒绝，不留下错位的摘要与版本', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', TWO_VOLUME_TEXT);
+			const first = (await service.listChapters(book))[0];
+			await service.ensureChapterSummary(book, first);
+			// 未来卷的计划落在 章节摘要/第三卷/（分卷本身尚未创建）
+			const plan = await service.createChapterPlan(book, '远景', { seq: 9, volumeDir: '第三卷' });
+
+			await assert.rejects(() => service.renameVolume(book, '第一卷', '第三卷'), /已有章节摘要目录/);
+			assert.ok(await exists(path.join(book.dir, CHAPTERS_DIR, '第一卷')), '分卷未被移动');
+			assert.ok(
+				await exists(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', first.fileName)),
+				'原摘要留在原分卷镜像下'
+			);
+			assert.ok(await exists(plan.filePath), '未来卷的计划原样保留');
+			assert.ok(
+				await exists(path.join(book.dir, CHAPTERS_DIR, '第一卷', first.fileName)),
+				'章节未被移动'
+			);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('deleteVolume 删除卷后剩余章导航重排，卷内进度迁移到剩余首章，版本目录一并删除', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
 			const service = makeService();
 			const { book } = await createBookFromText(root, '书', TWO_VOLUME_TEXT);
 			const chapters = await service.listChapters(book);
 			await service.setProgress(book.dir, chapterRelPath(chapters[0]));
+			await service.createChapterVersion(book, chapters[0], '备选');
 
 			await service.deleteVolume(book, '第一卷', true);
 
 			assert.ok(!(await exists(path.join(book.dir, CHAPTERS_DIR, '第一卷'))));
+			assert.ok(!(await exists(path.join(book.dir, VERSIONS_DIR, '第一卷'))));
 			const restMd = await fs.readFile(path.join(book.dir, CHAPTERS_DIR, '第二卷', chapters[1].fileName), 'utf8');
 			assert.ok(!restMd.includes('上一章'));
 			assert.strictEqual(service.getProgress(book.dir), chapterRelPath(chapters[1]));
@@ -950,6 +986,348 @@ suite('LibraryService 写操作', () => {
 			assert.strictEqual(service.getCurrentBook()?.dir, renamed.dir);
 			assert.strictEqual(service.getProgress(renamed.dir), chapterRelPath(chapters[0]));
 			assert.strictEqual(service.getProgress(book.dir), undefined);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('摘要：卷摘要与计划摘要', () => {
+	const BOOK_TEXT = ['# 第一卷', '## 第1章 甲', '正文甲', '## 第2章 乙', '正文乙', '## 第3章 丙', '正文丙'].join('\n');
+	const VOLUME_SUMMARY_DIR = '卷摘要';
+	/** 摘要文件的修改时间固定在 60 秒前，便于用 utimes 编排先后顺序。 */
+	const PAST = Math.floor(Date.now() / 1000) - 60;
+
+	test('卷摘要状态：未建 → 最新 → 卷内章节更新后待维护', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const [volume] = await service.listVolumes(book);
+			assert.strictEqual(volume.dirName, '第一卷');
+			assert.strictEqual((await service.listVolumeSummaries(book))[0].state, 'missing');
+
+			const filePath = await service.ensureVolumeSummary(book, volume);
+			assert.strictEqual(filePath, path.join(book.dir, VOLUME_SUMMARY_DIR, '第一卷.md'));
+			const md = await fs.readFile(filePath, 'utf8');
+			assert.ok(md.includes('# 第一卷 · 卷摘要'));
+			assert.ok(md.includes(`0001 ${volume.chapters[0].title}`));
+			assert.ok(!md.includes('## 计划'), '卷摘要不含计划小节（计划写在章节计划 / 区间计划里）');
+			assert.strictEqual((await service.listVolumeSummaries(book))[0].state, 'ok');
+
+			// 卷内任一章比卷摘要新 → 待维护
+			await fs.utimes(filePath, PAST, PAST);
+			const chapterPath = path.join(book.dir, CHAPTERS_DIR, '第一卷', volume.chapters[1].fileName);
+			await fs.utimes(chapterPath, PAST + 30, PAST + 30);
+			assert.strictEqual((await service.listVolumeSummaries(book))[0].state, 'stale');
+
+			// 卷内有「有摘要无正文」的计划章节 → 卷摘要即计划（优先于 mtime 判定）
+			await service.createChapterPlan(book, '后续', { seq: 4, volumeDir: '第一卷' });
+			assert.strictEqual((await service.listVolumeSummaries(book))[0].state, 'planned');
+			// 正文补齐（计划接手）后回到 mtime 判定：正文比卷摘要新 → 待维护
+			await service.createChapterAt(book, 4, '后续', '第一卷');
+			assert.strictEqual((await service.listVolumeSummaries(book))[0].state, 'stale');
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('卷摘要随分卷重命名与删除同步', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const [volume] = await service.listVolumes(book);
+			await service.ensureVolumeSummary(book, volume);
+
+			await service.renameVolume(book, '第一卷', '第二卷');
+			assert.ok(await exists(path.join(book.dir, VOLUME_SUMMARY_DIR, '第二卷.md')));
+			assert.ok(!(await exists(path.join(book.dir, VOLUME_SUMMARY_DIR, '第一卷.md'))));
+
+			await service.deleteVolume(book, '第二卷', true);
+			assert.ok(!(await exists(path.join(book.dir, VOLUME_SUMMARY_DIR, '第二卷.md'))));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('计划章节摘要：正文未创建时为计划，正文创建时自动接手并转为待维护', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const plan = await service.createChapterPlan(book, '旧名', { seq: 4, volumeDir: '第一卷' });
+			assert.strictEqual(plan.filePath, path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', '0004-旧名.md'));
+			assert.strictEqual(plan.shifted, 0);
+
+			let states = await service.listChapterSummaryStates(book);
+			assert.strictEqual(states.get('第一卷/0004-旧名.md'), 'planned');
+			const [group] = await service.listChapterSummaries(book);
+			assert.strictEqual(group.entries.find((entry) => entry.fileName === '0004-旧名.md')?.state, 'planned');
+
+			// 正文以同序号、不同标题创建 → 计划摘要移到正文名下，标题与原文链接补齐
+			const fileName = await service.createChapter(book, '新名', '第一卷');
+			assert.strictEqual(fileName, '0004-新名.md');
+			assert.ok(!(await exists(plan.filePath)));
+			const md = await fs.readFile(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', '0004-新名.md'), 'utf8');
+			assert.ok(md.includes('# 新名 · 摘要'));
+			assert.ok(md.includes('> 原文：[0004-新名.md](<../../章节/第一卷/0004-新名.md>)'));
+			states = await service.listChapterSummaryStates(book);
+			assert.strictEqual(states.get('第一卷/0004-新名.md'), 'stale');
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('插章顺延序号时计划摘要一并顺延', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			await service.createChapterPlan(book, '后续', { seq: 4, volumeDir: '第一卷' });
+
+			// 末章（序号 3）顺延为 4，计划摘要须让位顺延为 0005
+			const chapters = await service.listChapters(book);
+			await service.insertChapter(book, '插章', { before: chapters[2] });
+
+			assert.ok(await exists(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', '0005-后续.md')));
+			assert.ok(!(await exists(path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', '0004-后续.md'))));
+			assert.deepStrictEqual((await service.listChapters(book)).map((c) => c.seq), [1, 2, 3, 4]);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('按计划写正文：createChapterAt 落到计划序号并接手，占用序号顺延、远处序号留空洞', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			// 计划落在存量之间：0002 被占用 → 建计划时顺延，计划占住 0002
+			const plan = await service.createChapterPlan(book, '插曲', { seq: 2, volumeDir: '第一卷' });
+			assert.strictEqual(plan.shifted, 2);
+			assert.deepStrictEqual((await service.listChapters(book)).map((c) => c.seq), [1, 3, 4]);
+
+			// 按计划写正文：序号 2 空闲 → 直接落位，计划摘要自动接手
+			const created = await service.createChapterAt(book, 2, '插曲', '第一卷');
+			assert.strictEqual(created.fileName, '0002-插曲.md');
+			assert.strictEqual(created.shifted, 0);
+			const md = await fs.readFile(
+				path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', '0002-插曲.md'),
+				'utf8'
+			);
+			assert.ok(md.includes('> 原文：[0002-插曲.md]'));
+
+			// 远处序号（500）：允许留空洞
+			await service.createChapterAt(book, 500, '遥远的终章', '第一卷');
+			assert.deepStrictEqual(
+				(await service.listChapters(book)).map((c) => c.seq),
+				[1, 2, 3, 4, 500]
+			);
+
+			// 已占用序号：其后全部顺延（含远处的 500）
+			const pushed = await service.createChapterAt(book, 3, '挤进来', '第一卷');
+			assert.strictEqual(pushed.shifted, 3);
+			assert.deepStrictEqual(
+				(await service.listChapters(book)).map((c) => c.seq),
+				[1, 2, 3, 4, 5, 501]
+			);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('重命名分卷时目标卷名已有卷摘要（未来卷的计划）则拒绝，不覆盖', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			await service.ensureVolumeSummary(book, { name: '第一卷', dirName: '第一卷' });
+			const planFile = await service.ensureVolumeSummary(book, { name: '第二卷', dirName: '第二卷' });
+			const planMd = await fs.readFile(planFile, 'utf8');
+
+			await assert.rejects(() => service.renameVolume(book, '第一卷', '第二卷'), /已有卷摘要/);
+			assert.ok(await exists(path.join(book.dir, CHAPTERS_DIR, '第一卷')), '分卷未被移动');
+			assert.strictEqual(await fs.readFile(planFile, 'utf8'), planMd, '未来卷的计划原样保留');
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('卷摘要状态：卷内计划章节未写成正文时为计划（分卷尚未创建亦然），chapterPlanSlot 清洗非法引用', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const filePath = await service.ensureVolumeSummary(book, { name: '第二卷', dirName: '第二卷' });
+			// 分卷尚未创建、卷内也没有计划章节 → 只按 mtime（摘要文件在 → 最新）
+			assert.deepStrictEqual(
+				(await service.listVolumeSummaries(book)).map((summary) => [summary.name, summary.state]),
+				[
+					['第一卷', 'missing'],
+					['第二卷', 'ok'],
+				]
+			);
+			// 卷内写入计划章节（正文未写）→ 该卷摘要转为计划
+			await service.createChapterPlan(book, '抵达', { seq: 7, volumeDir: '第二卷' });
+			assert.strictEqual(
+				(await service.listVolumeSummaries(book)).find((summary) => summary.name === '第二卷')?.state,
+				'planned'
+			);
+			const md = await fs.readFile(filePath, 'utf8');
+			assert.ok(md.includes('- （尚无章节）'));
+
+			const summaryDir = path.join(book.dir, CHAPTER_SUMMARIES_DIR);
+			assert.deepStrictEqual(await service.chapterPlanSlot(book, '0004-抵达'), {
+				filePath: path.join(summaryDir, '0004-抵达.md'),
+			});
+			assert.deepStrictEqual(await service.chapterPlanSlot(book, '第二卷/0005-抵达.md'), {
+				filePath: path.join(summaryDir, '第二卷', '0005-抵达.md'),
+			});
+			assert.strictEqual(await service.chapterPlanSlot(book, '抵达'), undefined);
+			assert.strictEqual(await service.chapterPlanSlot(book, '../../0005-越界'), undefined);
+			// 序号已被正文占用：不能直接写计划，改走 manageChapter(insert, plan) 顺延
+			const taken = await service.chapterPlanSlot(book, '0002-别处来的计划');
+			assert.ok(taken && 'occupied' in taken && taken.occupied.kind === 'chapter');
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('计划章节可落在存量中间：序号被占用时其后的正文与计划一并顺延', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const before = await service.listChapters(book);
+			// 先建一个末尾之后的计划（序号 4），再在中间（序号 2）建计划
+			await service.createChapterPlan(book, '旧计划', { seq: 4, volumeDir: '第一卷' });
+			const plan = await service.createChapterPlan(book, '插队计划', { seq: 2, volumeDir: '第一卷' });
+
+			assert.strictEqual(plan.fileName, '0002-插队计划.md');
+			assert.strictEqual(plan.shifted, 2);
+			await fs.access(plan.filePath);
+			const after = await service.listChapters(book);
+			assert.deepStrictEqual(after.map((c) => c.seq), [1, 3, 4]);
+			// 原有计划摘要跟着顺延到 0005，不会撞上顺延后的正文
+			const summariesDir = path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷');
+			await fs.access(path.join(summariesDir, '0005-旧计划.md'));
+			assert.ok(!(await exists(path.join(summariesDir, '0004-旧计划.md'))));
+			// 顺延后相邻章导航重写为新的文件名
+			const first = await fs.readFile(path.join(book.dir, CHAPTERS_DIR, '第一卷', before[0].fileName), 'utf8');
+			assert.ok(first.includes(after[1].fileName));
+			// 两条计划都在清单里
+			const states = await service.listChapterSummaryStates(book);
+			assert.strictEqual(states.get('第一卷/0002-插队计划.md'), 'planned');
+			assert.strictEqual(states.get('第一卷/0005-旧计划.md'), 'planned');
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('区间摘要：起止任意、可重叠，覆盖默认块后不再重复提示，越出正文即计划', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const intervalDir = path.join(book.dir, INTERVAL_SUMMARIES_DIR);
+			// 默认块：每 10 章一块；3 章的书只有一块，未被覆盖时提示未建
+			let intervals = await service.listIntervalSummaries(book);
+			assert.deepStrictEqual(
+				intervals.map((interval) => [interval.fileName, interval.state]),
+				[['0001-0003.md', 'missing']]
+			);
+
+			// 任意长度（2 章）的区间：覆盖了默认块，默认块不再提示
+			await service.ensureIntervalSummary(book, 1, 2);
+			const shortPath = path.join(intervalDir, '0001-0002.md');
+			await fs.writeFile(
+				shortPath,
+				(await fs.readFile(shortPath, 'utf8')).replace('## 摘要', '## 摘要\n\n测试正文'),
+				'utf8'
+			);
+			intervals = await service.listIntervalSummaries(book);
+			assert.deepStrictEqual(
+				intervals.map((interval) => [interval.fileName, interval.state]),
+				[['0001-0002.md', 'ok']]
+			);
+			assert.deepStrictEqual(intervals[0].chapters.map((chapter) => chapter.seq), [1, 2]);
+
+			// 重叠区间 + 越出现存章节的区间（后者即计划）
+			await service.ensureIntervalSummary(book, 2, 12);
+			intervals = await service.listIntervalSummaries(book);
+			assert.deepStrictEqual(
+				intervals.map((interval) => [interval.fileName, interval.state]),
+				[
+					['0001-0002.md', 'ok'],
+					['0002-0012.md', 'planned'],
+				]
+			);
+
+			// 改区间：文件改名，标题与「章节范围」重写，摘要正文保留
+			const target = await service.editIntervalSummary(book, '0001-0002.md', 3, 5);
+			assert.strictEqual(target, path.join(intervalDir, '0003-0005.md'));
+			assert.ok(!(await exists(shortPath)));
+			const md = await fs.readFile(target, 'utf8');
+			assert.ok(md.includes('# 第 3–5 章 · 区间摘要'));
+			assert.ok(md.includes('测试正文'));
+			assert.ok(!md.includes('0001'));
+
+			// 删除后只剩改过的那份（它覆盖了默认块）
+			await service.removeIntervalSummary(book, '0002-0012.md');
+			intervals = await service.listIntervalSummaries(book);
+			assert.deepStrictEqual(intervals.map((interval) => interval.fileName), ['0003-0005.md']);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('卷内有计划章节但卷摘要未创建时状态仍是未建', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			await service.createChapterPlan(book, '远景', { seq: 9, volumeDir: '第一卷' });
+
+			const [summary] = await service.listVolumeSummaries(book);
+			assert.strictEqual(summary.state, 'missing');
+			await assert.rejects(() => service.removeVolumePlan(book, '第一卷'), /尚未创建/);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('摘要删除只对计划开放：章节 / 卷 / 区间摘要已有正文时拒绝单独删除', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			const [volume] = await service.listVolumes(book);
+			const first = volume.chapters[0];
+
+			// 章节摘要：有正文时不能单独删；计划可以（接受 章节摘要/ 前缀与 .md）
+			await service.ensureChapterSummary(book, first);
+			await assert.rejects(() => service.removeChapterPlan(book, chapterRelPath(first)), /已有正文/);
+			const plan = await service.createChapterPlan(book, '远景', { seq: 9, volumeDir: '第一卷' });
+			assert.strictEqual(await service.removeChapterPlan(book, '章节摘要/第一卷/0009-远景.md'), '第一卷/0009-远景.md');
+			assert.ok(!(await exists(plan.filePath)));
+			await assert.rejects(() => service.removeChapterPlan(book, '第一卷/0009-远景'), /找不到计划摘要/);
+
+			// 卷摘要：卷内还没有正文时可删，有正文时拒绝
+			await service.ensureVolumeSummary(book, { name: '第二卷', dirName: '第二卷' });
+			assert.strictEqual(await service.removeVolumePlan(book, '第二卷'), '第二卷.md');
+			assert.ok(!(await exists(path.join(book.dir, VOLUME_SUMMARIES_DIR, '第二卷.md'))));
+			await service.ensureVolumeSummary(book, volume);
+			await assert.rejects(() => service.removeVolumePlan(book, '第一卷'), /已有正文/);
+
+			// 区间摘要：越出现存章节范围（计划）可删，覆盖正文的拒绝
+			await service.ensureIntervalSummary(book, 9, 12);
+			await service.removeIntervalSummary(book, intervalSummaryFileName(9, 12));
+			await service.ensureIntervalSummary(book, 1, 3);
+			await assert.rejects(
+				() => service.removeIntervalSummary(book, intervalSummaryFileName(1, 3)),
+				/已覆盖正文/
+			);
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}

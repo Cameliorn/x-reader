@@ -1,6 +1,14 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, ChapterVolume, IntervalSummary } from './model/book';
+import type {
+	BookInfo,
+	ChapterFile,
+	ChapterSummaryEntry,
+	ChapterVolume,
+	IntervalSummary,
+	SummaryState,
+	VolumeSummary,
+} from './model/book';
 import {
 	promptInstallAudio,
 	readChapterText,
@@ -11,11 +19,10 @@ import {
 import { commitAll, resetHistory } from './services/git';
 import {
 	CARDS_DIR,
-	CHAPTER_SUMMARIES_DIR,
 	chapterRelPath,
 	CHAPTERS_DIR,
 	closeFileTabs,
-	INTERVAL_SUMMARIES_DIR,
+	INTERVAL_SUMMARY_SIZE,
 	LibraryService,
 	matchesProgress,
 	NOTES_DIR,
@@ -69,7 +76,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		viewIcon('summaries.svg'),
 		viewIcon('volume.svg'),
 		viewIcon('summary-chapter.svg'),
-		viewIcon('summary-interval.svg')
+		viewIcon('summary-interval.svg'),
+		viewIcon('volume.svg')
 	);
 	const notesProvider = new EntryProvider(
 		library,
@@ -142,6 +150,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 		if (!book) {
 			setContext('emptyChapters', false);
+			setContext('emptySummaries', false);
 			setContext('emptyMetadata', false);
 			setContext('emptyWorld', false);
 			setContext('emptyCards', false);
@@ -165,6 +174,13 @@ export function activate(context: vscode.ExtensionContext): void {
 			isEmptySection(NOTES_DIR),
 		]);
 		setContext('emptyChapters', chapters.length === 0);
+		// 摘要视图：没有章节、也没有任何摘要或计划时才置空（计划摘要可以先于正文存在）
+		const emptySummaries =
+			chapters.length === 0 &&
+			(await library.listChapterSummaryStates(book)).size === 0 &&
+			(await library.listVolumeSummaries(book)).length === 0 &&
+			(await library.listIntervalSummaries(book)).length === 0;
+		setContext('emptySummaries', emptySummaries);
 		setContext('emptyMetadata', !meta || (meta.fields.length === 0 && meta.sections.length === 0));
 		setContext('emptyWorld', emptyWorld);
 		setContext('emptyCards', emptyCards);
@@ -375,6 +391,16 @@ export function activate(context: vscode.ExtensionContext): void {
 	/** 由书文件夹路径构造 BookInfo（树项命令通常只带路径）。 */
 	const bookAt = (dir: string): BookInfo => ({ name: path.basename(dir), dir });
 
+	/** 摘要状态短标签（QuickPick 描述用，与摘要视图的标记一致）。 */
+	const summaryStateLabel = (state: SummaryState): string =>
+		state === 'planned'
+			? `✎ ${vscode.l10n.t('Plan')}`
+			: state === 'stale'
+				? `⚠ ${vscode.l10n.t('needs update')}`
+				: state === 'ok'
+					? `✓ ${vscode.l10n.t('summary created')}`
+					: vscode.l10n.t('click to create summary');
+
 	/** 条目命令参数：书架书名节点是 BookInfo；条目视图的分类节点则指向当前书 + 该分类路径。 */
 	const entryTarget = (
 		arg?: BookInfo | EntryCategoryNode
@@ -399,6 +425,51 @@ export function activate(context: vscode.ExtensionContext): void {
 	const promptName = async (title: string, prompt: string, value?: string): Promise<string | undefined> => {
 		const name = await vscode.window.showInputBox({ title, prompt, value });
 		return name?.trim() || undefined;
+	};
+
+	/** 弹出章节序号输入框（正整数校验）；取消或非法时返回 undefined。 */
+	const promptSeq = async (title: string, prompt: string, value?: number): Promise<number | undefined> => {
+		const input = await vscode.window.showInputBox({
+			title,
+			prompt,
+			value: value === undefined ? undefined : String(value),
+			validateInput: (raw) =>
+				/^\d+$/.test(raw.trim()) && Number(raw) > 0
+					? undefined
+					: vscode.l10n.t('Chapter number must be a positive integer'),
+		});
+		const seq = Number(input);
+		return input !== undefined && input !== '' && Number.isInteger(seq) && seq > 0 ? seq : undefined;
+	};
+
+	/** 选择新章节的插入位置：接在全书末尾 / 插在某章之前、之后；无章节时只有末尾，取消返回 undefined。 */
+	const pickChapterPosition = async (
+		book: BookInfo,
+		title: string
+	): Promise<{ where: 'end' } | { where: 'before' | 'after'; anchor: ChapterFile } | undefined> => {
+		const chapters = await library.listChapters(book);
+		if (chapters.length === 0) {
+			return { where: 'end' };
+		}
+		const picked = await vscode.window.showQuickPick(
+			[
+				{ label: vscode.l10n.t('At the end of the book'), where: 'end' as const },
+				{ label: vscode.l10n.t('After a chapter…'), where: 'after' as const },
+				{ label: vscode.l10n.t('Before a chapter…'), where: 'before' as const },
+			],
+			{ title, placeHolder: vscode.l10n.t('Where to insert the new chapter') }
+		);
+		if (!picked) {
+			return undefined;
+		}
+		if (picked.where === 'end') {
+			return { where: 'end' };
+		}
+		const anchor = await vscode.window.showQuickPick(
+			chapters.map((chapter) => ({ label: chapter.title, description: chapterRelPath(chapter), chapter })),
+			{ title, placeHolder: vscode.l10n.t('Select the reference chapter') }
+		);
+		return anchor ? { where: picked.where, anchor: anchor.chapter } : undefined;
 	};
 
 	/** 弹出重命名输入框并执行；取消或留空时不动作。 */
@@ -899,10 +970,14 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			const volumes = await library.listVolumes(book);
-			const targets = [
-				{ label: vscode.l10n.t('(root)'), target: undefined as string | undefined },
-				...volumes.filter((v) => v.dirName).map((v) => ({ label: v.name, target: v.dirName as string | undefined })),
-			].filter((c) => c.target !== chapter.volumeDir);
+			// 目标只能是真实分卷（章节根目录是虚拟卷，与工具的 requireVolumeDir 一致）
+			const targets = volumes
+				.filter((volume) => volume.dirName && volume.dirName !== chapter.volumeDir)
+				.map((volume) => ({ label: volume.name, target: volume.dirName as string }));
+			if (targets.length === 0) {
+				void vscode.window.showInformationMessage(vscode.l10n.t('No other volumes to move to'));
+				return;
+			}
 			const pick = await vscode.window.showQuickPick(targets, {
 				title: vscode.l10n.t('Move Chapter to Volume'),
 				placeHolder: vscode.l10n.t('Select target volume'),
@@ -961,8 +1036,32 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (!title) {
 				return;
 			}
-			const fileName = await library.createChapter(book, title, volumeDir);
-			await openChapter(book.dir, volumeDir, fileName);
+			const position = await pickChapterPosition(book, vscode.l10n.t('New Chapter'));
+			if (!position) {
+				return;
+			}
+			if (position.where === 'end') {
+				const fileName = await library.createChapter(book, title, volumeDir);
+				await openChapter(book.dir, volumeDir, fileName);
+				return;
+			}
+			// 插在参照章节之前 / 之后：新章节归入参照章节所在分卷，序号被占用时其后的章节顺延
+			const created = await library
+				.insertChapter(book, title, position.where === 'after' ? { after: position.anchor } : { before: position.anchor })
+				.catch((error: unknown) => {
+					const detail = error instanceof Error ? error.message : String(error);
+					void vscode.window.showErrorMessage(vscode.l10n.t('Failed to create: {0}', detail));
+					return undefined;
+				});
+			if (!created) {
+				return;
+			}
+			if (created.renumbered > 0) {
+				void vscode.window.showInformationMessage(
+					vscode.l10n.t('{0} chapters after this position were renumbered (+1)', created.renumbered)
+				);
+			}
+			await openChapter(book.dir, position.anchor.volumeDir, created.fileName);
 		}),
 		vscode.commands.registerCommand('xReader.renameVolume', async (volume?: ChapterVolume) => {
 			const book = library.getCurrentBook();
@@ -971,7 +1070,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			const dirName = volume.dirName;
 			await renameWithInput(vscode.l10n.t('Rename Volume'), volume.name, (name) =>
-				library.renameVolume(book, dirName, name)
+				notifyFailure(vscode.l10n.t('Edit failed: {0}'), () => library.renameVolume(book, dirName, name))
 			);
 		}),
 		vscode.commands.registerCommand('xReader.deleteVolume', async (volume?: ChapterVolume) => {
@@ -992,25 +1091,23 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand(
 			'xReader.deleteChapterSummary',
-			async (bookDir?: string, volumeDir?: string, fileName?: string) => {
-				if (!bookDir || !fileName) {
+			async (entry?: ChapterSummaryEntry) => {
+				const book = library.getCurrentBook();
+				if (!book || !entry) {
 					return;
 				}
-				if (await confirmDelete(vscode.l10n.t('Delete chapter summary “{0}”?', fileName))) {
-					await library.removeEntry(
-						bookAt(bookDir),
-						volumeDir ? `${CHAPTER_SUMMARIES_DIR}/${volumeDir}` : CHAPTER_SUMMARIES_DIR,
-						fileName
-					);
+				if (await confirmDelete(vscode.l10n.t('Delete chapter summary “{0}”?', entry.fileName))) {
+					await library.removeChapterPlan(book, chapterRelPath(entry));
 				}
 			}
 		),
-		vscode.commands.registerCommand('xReader.deleteIntervalSummary', async (bookDir?: string, fileName?: string) => {
-			if (!bookDir || !fileName) {
+		vscode.commands.registerCommand('xReader.deleteIntervalSummary', async (interval?: IntervalSummary) => {
+			const book = library.getCurrentBook();
+			if (!book || !interval) {
 				return;
 			}
-			if (await confirmDelete(vscode.l10n.t('Delete interval summary “{0}”?', fileName))) {
-				await library.removeEntry(bookAt(bookDir), INTERVAL_SUMMARIES_DIR, fileName);
+			if (await confirmDelete(vscode.l10n.t('Delete interval summary “{0}”?', interval.fileName))) {
+				await library.removeIntervalSummary(book, interval.fileName);
 			}
 		}),
 		// 分类操作：世界书/角色卡/笔记 三处共用（节点自带 rootDir）；标题栏按钮各自传根目录
@@ -1071,16 +1168,189 @@ export function activate(context: vscode.ExtensionContext): void {
 				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 			}
 		),
+		// 按计划写正文：计划章节在同序号落成正文，计划摘要自动接手，随后打开新章节
+		vscode.commands.registerCommand(
+			'xReader.writePlannedChapter',
+			async (entry?: ChapterSummaryEntry) => {
+				const book = library.getCurrentBook();
+				if (!book || !entry) {
+					return;
+				}
+				const created = await library
+					.createChapterAt(book, entry.seq, entry.title, entry.volumeDir)
+					.catch((error: unknown) => {
+						const detail = error instanceof Error ? error.message : String(error);
+						void vscode.window.showErrorMessage(vscode.l10n.t('Failed to create: {0}', detail));
+						return undefined;
+					});
+				if (!created) {
+					return;
+				}
+				if (created.shifted > 0) {
+					void vscode.window.showInformationMessage(
+						vscode.l10n.t('{0} chapters after this position were renumbered (+1)', created.shifted)
+					);
+				}
+				await openChapter(book.dir, entry.volumeDir, created.fileName);
+			}
+		),
 		vscode.commands.registerCommand(
 			'xReader.openIntervalSummary',
 			async (bookDir?: string, interval?: IntervalSummary) => {
 				if (!bookDir || !interval) {
 					return;
 				}
-				const filePath = await library.ensureIntervalSummary(bookAt(bookDir), interval);
+				const filePath = await library.ensureIntervalSummary(bookAt(bookDir), interval.startSeq, interval.endSeq);
 				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
 			}
 		),
+		// 区间摘要：任意起止（可重叠），区间内还有没写的章节即计划
+		vscode.commands.registerCommand('xReader.newIntervalSummary', async () => {
+			const book = library.getCurrentBook();
+			if (!book) {
+				return;
+			}
+			const chapters = await library.listChapters(book);
+			const first = chapters.length > 0 ? Math.min(...chapters.map((chapter) => chapter.seq)) : 1;
+			const title = vscode.l10n.t('New Interval Summary');
+			const startSeq = await promptSeq(title, vscode.l10n.t('Start chapter'), first);
+			if (startSeq === undefined) {
+				return;
+			}
+			const endSeq = await promptSeq(title, vscode.l10n.t('End chapter'), startSeq + INTERVAL_SUMMARY_SIZE - 1);
+			if (endSeq === undefined || endSeq < startSeq) {
+				void vscode.window.showInformationMessage(
+					vscode.l10n.t('The end chapter must not be before the start chapter')
+				);
+				return;
+			}
+			const filePath = await library.ensureIntervalSummary(book, startSeq, endSeq);
+			await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+		}),
+		vscode.commands.registerCommand(
+			'xReader.editIntervalSummary',
+			async (interval?: IntervalSummary) => {
+				const book = library.getCurrentBook();
+				if (!book || !interval) {
+					return;
+				}
+				const title = vscode.l10n.t('Edit Interval Range');
+				const startSeq = await promptSeq(title, vscode.l10n.t('Start chapter'), interval.startSeq);
+				if (startSeq === undefined) {
+					return;
+				}
+				const endSeq = await promptSeq(title, vscode.l10n.t('End chapter'), interval.endSeq);
+				if (endSeq === undefined || endSeq < startSeq) {
+					void vscode.window.showInformationMessage(
+						vscode.l10n.t('The end chapter must not be before the start chapter')
+					);
+					return;
+				}
+				let filePath = '';
+				const ok = await notifyFailure(vscode.l10n.t('Edit failed: {0}'), async () => {
+					filePath = await library.editIntervalSummary(book, interval.fileName, startSeq, endSeq);
+				});
+				if (ok && filePath) {
+					await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+				}
+			}
+		),
+		vscode.commands.registerCommand(
+			'xReader.openVolumeSummary',
+			async (bookDir?: string, summary?: VolumeSummary) => {
+				if (!bookDir || !summary) {
+					return;
+				}
+				const filePath = await library.ensureVolumeSummary(bookAt(bookDir), summary);
+				await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+			}
+		),
+		vscode.commands.registerCommand('xReader.deleteVolumeSummary', async (summary?: VolumeSummary) => {
+			const book = library.getCurrentBook();
+			if (!book || !summary) {
+				return;
+			}
+			if (await confirmDelete(vscode.l10n.t('Delete volume summary “{0}”?', summary.fileName))) {
+				await library.removeVolumePlan(book, summary.fileName);
+			}
+		}),
+		// 计划摘要：为尚未创建的章节 / 区间先建摘要（正文创建时自动接管）；卷摘要不含计划
+		vscode.commands.registerCommand('xReader.newChapterPlan', async () => {
+			const book = library.getCurrentBook();
+			if (!book) {
+				return;
+			}
+			const volumes = await library.listVolumes(book);
+			const chapters = volumes.flatMap((volume) => volume.chapters);
+			// 计划归入真实分卷；书里还没有分卷（章节都在根目录）时不问，直接建在根目录
+			const realVolumes = volumes.filter((volume) => volume.dirName);
+			let volumeDir: string | undefined;
+			if (realVolumes.length > 0) {
+				const pick = await vscode.window.showQuickPick(
+					realVolumes.map((volume) => ({ label: volume.name, volumeDir: volume.dirName as string })),
+					{
+						title: vscode.l10n.t('New Chapter Plan'),
+						placeHolder: vscode.l10n.t('Select volume'),
+					}
+				);
+				if (!pick) {
+					return;
+				}
+				volumeDir = pick.volumeDir;
+			}
+			const nextSeq = chapters.reduce((max, chapter) => Math.max(max, chapter.seq), 0) + 1;
+			const seq = await promptSeq(
+				vscode.l10n.t('New Chapter Plan'),
+				vscode.l10n.t('Chapter number (existing chapters shift if the slot is taken)'),
+				nextSeq
+			);
+			if (seq === undefined) {
+				return;
+			}
+			const title = await promptName(vscode.l10n.t('New Chapter Plan'), vscode.l10n.t('Chapter title'));
+			if (!title) {
+				return;
+			}
+			const result = await library.createChapterPlan(book, title, { seq, volumeDir });
+			if (result.shifted > 0) {
+				void vscode.window.showInformationMessage(
+					vscode.l10n.t('{0} chapters after this position were renumbered (+1)', result.shifted)
+				);
+			}
+			await vscode.window.showTextDocument(vscode.Uri.file(result.filePath));
+		}),
+		vscode.commands.registerCommand('xReader.newVolumeSummary', async () => {
+			const book = library.getCurrentBook();
+			if (!book) {
+				return;
+			}
+			const futureLabel = vscode.l10n.t('A volume not created yet…');
+			const summaries = await library.listVolumeSummaries(book);
+			const pick = await vscode.window.showQuickPick(
+				[
+					...summaries.map((summary) => ({
+						label: summary.name,
+						description: `${summary.fileName} · ${summaryStateLabel(summary.state)}`,
+						summary,
+					})),
+					{ label: futureLabel, description: '', summary: undefined as VolumeSummary | undefined },
+				],
+				{ title: vscode.l10n.t('New Volume Summary'), placeHolder: vscode.l10n.t('Select volume') }
+			);
+			if (!pick) {
+				return;
+			}
+			let volume: Pick<VolumeSummary, 'name' | 'dirName'> | undefined = pick.summary;
+			if (!volume) {
+				const name = await promptName(vscode.l10n.t('New Volume Summary'), vscode.l10n.t('Volume name'));
+				if (!name) {
+					return;
+				}
+				volume = { name, dirName: name };
+			}
+			const filePath = await library.ensureVolumeSummary(book, volume);
+			await vscode.window.showTextDocument(vscode.Uri.file(filePath));
+		}),
 		vscode.commands.registerCommand('xReader.snapshot', async () => {
 			const root = library.getLibraryPath();
 			if (!root) {

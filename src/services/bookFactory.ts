@@ -9,12 +9,21 @@ export const WORLD_DIR = '世界书';
 export const CARDS_DIR = '角色卡';
 export const CHAPTER_SUMMARIES_DIR = '章节摘要';
 export const INTERVAL_SUMMARIES_DIR = '区间摘要';
+export const VOLUME_SUMMARIES_DIR = '卷摘要';
 export const NOTES_DIR = '笔记';
 export const VERSIONS_DIR = '版本';
 export const META_FILE = '元数据.md';
 
 /** 除 章节/ 外的空目录骨架（放 .gitkeep 以便 git 跟踪）。 */
-const EMPTY_DIRS = [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR, VERSIONS_DIR];
+const EMPTY_DIRS = [
+	WORLD_DIR,
+	CARDS_DIR,
+	CHAPTER_SUMMARIES_DIR,
+	INTERVAL_SUMMARIES_DIR,
+	VOLUME_SUMMARIES_DIR,
+	NOTES_DIR,
+	VERSIONS_DIR,
+];
 
 /** 在 libraryRoot 下创建书文件夹（目录骨架 + 章节 md），返回书信息与章节数。 */
 export async function createBookFromText(

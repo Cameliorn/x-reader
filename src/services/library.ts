@@ -2,7 +2,7 @@ import type { Dirent } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import type { BookInfo, ChapterFile, ChapterVolume, EntryCategory, EntryFile, IntervalSummary, Shelf, SummaryState } from '../model/book';
+import type { BookInfo, ChapterFile, ChapterSummaryGroup, ChapterVolume, EntryCategory, EntryFile, IntervalSummary, Shelf, SummaryState, VolumeSummary } from '../model/book';
 import {
 	CARDS_DIR,
 	CHAPTER_SUMMARIES_DIR,
@@ -13,6 +13,7 @@ import {
 	NOTES_DIR,
 	uniqueBookName,
 	VERSIONS_DIR,
+	VOLUME_SUMMARIES_DIR,
 	WORLD_DIR,
 } from './bookFactory';
 import { commitAll } from './git';
@@ -24,6 +25,7 @@ import {
 	buildIntervalSummaryMarkdown,
 	buildMetadataMarkdown,
 	buildNoteMarkdown,
+	buildVolumeSummaryMarkdown,
 	chapterFileName,
 	chineseNumberToInt,
 	escapeMdLinkText,
@@ -33,9 +35,12 @@ import {
 	navRelPath,
 	parseBookMetadata,
 	parseChapterFileName,
+	parseIntervalSummaryFileName,
 	planChapterInsertSeq,
+	rewriteIntervalRange,
 	sanitizeFileTitle,
 	updateChapterNav,
+	volumeSummaryFileName,
 } from './markdown';
 import { decodeBuffer } from './novelParser';
 
@@ -48,6 +53,7 @@ export {
 	META_FILE,
 	NOTES_DIR,
 	VERSIONS_DIR,
+	VOLUME_SUMMARIES_DIR,
 	WORLD_DIR
 };
 
@@ -63,8 +69,22 @@ export const DEFAULT_SHELF_NAME = '默认';
 /** 切换主版本时原主版本在版本库中的默认存档名。 */
 export const PRIMARY_KEEP_VERSION_NAME = '原版';
 
+/** 计划章节摘要的位置：参照章（after / before，序号有空档优先）或直接指定序号（可落在存量中间）。 */
+export type ChapterPlanPosition =
+	| { after: Pick<ChapterFile, 'fileName' | 'volumeDir'> }
+	| { before: Pick<ChapterFile, 'fileName' | 'volumeDir'> }
+	| { seq: number; volumeDir?: string };
+
 /** 新建空书时创建的目录骨架（不含 章节/；放 .gitkeep 以便 git 跟踪）。 */
-const EMPTY_SUBDIRS = [WORLD_DIR, CARDS_DIR, CHAPTER_SUMMARIES_DIR, INTERVAL_SUMMARIES_DIR, NOTES_DIR, VERSIONS_DIR];
+const EMPTY_SUBDIRS = [
+	WORLD_DIR,
+	CARDS_DIR,
+	CHAPTER_SUMMARIES_DIR,
+	INTERVAL_SUMMARIES_DIR,
+	VOLUME_SUMMARIES_DIR,
+	NOTES_DIR,
+	VERSIONS_DIR,
+];
 
 /** 章节在 章节/ 下的相对路径（分卷含目录名），用作进度键。 */
 export function chapterRelPath(chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): string {
@@ -325,6 +345,11 @@ export class LibraryService {
 	/** 章节摘要镜像绝对路径（与 章节/ 目录同构）。 */
 	private summaryPath(book: BookInfo, fileName: string, volumeDir?: string): string {
 		return path.join(book.dir, CHAPTER_SUMMARIES_DIR, volumeDir ?? '', fileName);
+	}
+
+	/** 卷摘要文件绝对路径（一卷一档，默认卷用其卷名）。 */
+	private volumeSummaryPath(book: BookInfo, fileName: string): string {
+		return path.join(book.dir, VOLUME_SUMMARIES_DIR, fileName);
 	}
 
 	/** 移动/重命名章节文件及其摘要镜像（用 workspace.fs，让已打开的页签跟随新路径；无镜像时忽略）。 */
@@ -1237,6 +1262,34 @@ export class LibraryService {
 		}
 	}
 
+	/**
+	 * 接管同序号的计划摘要：新建/插入章节时把「有摘要无正文」的摘要移到新章节名下（序号全书唯一，故按序号定位），
+	 * 并刷新标题与原文链接，使计划直接成为该章摘要。
+	 */
+	private async adoptPlanSummary(book: BookInfo, chapter: Pick<ChapterFile, 'fileName' | 'volumeDir'>): Promise<void> {
+		const seq = parseChapterFileName(chapter.fileName)?.seq;
+		const targetPath = this.summaryPath(book, chapter.fileName, chapter.volumeDir);
+		let sourceTitle: string | undefined;
+		if (seq !== undefined && !(await pathExists(targetPath))) {
+			for (const [rel, filePath] of await this.scanChapterSummaryFiles(book)) {
+				const parsed = parseChapterFileName(path.basename(rel));
+				if (rel === chapterRelPath(chapter) || parsed?.seq !== seq) {
+					continue;
+				}
+				await fs.mkdir(path.dirname(targetPath), { recursive: true });
+				await vscode.workspace.fs.rename(vscode.Uri.file(filePath), vscode.Uri.file(targetPath));
+				sourceTitle = parsed.title;
+				break;
+			}
+		}
+		const before = await fs.stat(targetPath).catch(() => undefined);
+		await this.rewriteSummaryOriginal(book, chapter.volumeDir, chapter.fileName, sourceTitle);
+		if (before) {
+			// 计划先于正文：保留计划写入时的修改时间，摘要因此显示为待维护，提示按正文核对
+			await fs.utimes(targetPath, before.atime, before.mtime).catch(() => undefined);
+		}
+	}
+
 	/** 重命名章节文件（序号不变），同步重命名摘要镜像、重写全书导航、迁移进度；返回新文件名。 */
 	async renameChapter(
 		book: BookInfo,
@@ -1432,15 +1485,10 @@ export class LibraryService {
 
 	/** 新建章节 md（全局序号接最大值），补上前后导航并重写全书导航；返回文件名。 */
 	async createChapter(book: BookInfo, title: string, volumeDir?: string): Promise<string> {
-		if (volumeDir) {
-			this.assertVolumeName(volumeDir);
-		}
-		const chapters = await this.listChapters(book);
-		const seq = chapters.reduce((max, c) => Math.max(max, c.seq), 0) + 1;
-		const fileName = chapterFileName(seq, title);
-		await this.writeNewChapter(book, fileName, volumeDir, title);
-		await this.commitAndRefresh(`新建章节 ${chapterRelPath({ fileName, volumeDir })}`);
-		return fileName;
+		const seq = (await this.listChapters(book)).reduce((max, c) => Math.max(max, c.seq), 0) + 1;
+		const created = await this.writeChapterAt(book, seq, title, volumeDir);
+		await this.commitAndRefresh(`新建章节 ${chapterRelPath({ fileName: created.fileName, volumeDir })}`);
+		return created.fileName;
 	}
 
 	/** 在参照章节前/后插入新章节（新章节随参照章节所在分卷）。序号有空档时直接插入，无空档时顺延其后章节；返回新文件名与顺延章数。 */
@@ -1461,18 +1509,40 @@ export class LibraryService {
 			chapters.map((c) => c.seq),
 			'after' in position ? at + 1 : at
 		);
-		const shiftFrom = plan.shiftFrom;
-		let renumbered = 0;
-		if (shiftFrom !== undefined) {
-			const shifted = chapters.filter((c) => c.seq >= shiftFrom);
-			await this.shiftChapterSeqs(book, shifted);
-			renumbered = shifted.length;
+		const created = await this.writeChapterAt(book, plan.seq, title, anchor.volumeDir);
+		await this.commitAndRefresh(`插入章节 ${chapterRelPath({ fileName: created.fileName, volumeDir: anchor.volumeDir })}`);
+		return { fileName: created.fileName, renumbered: created.shifted };
+	}
+
+	/** 在指定序号创建章节正文（可落在存量中间、也可留出空洞）：该序号已被正文占用时其后的正文与计划顺延 +1；同序号计划摘要自动接手。 */
+	async createChapterAt(
+		book: BookInfo,
+		seq: number,
+		title: string,
+		volumeDir?: string
+	): Promise<{ fileName: string; shifted: number }> {
+		const created = await this.writeChapterAt(book, seq, title, volumeDir);
+		await this.commitAndRefresh(`新建章节 ${chapterRelPath({ fileName: created.fileName, volumeDir })}`);
+		return created;
+	}
+
+	/** 落盘章节正文（序号被占用时顺延 → 写模板与导航 → 同序号计划摘要接手），提交由调用方负责。 */
+	private async writeChapterAt(
+		book: BookInfo,
+		seq: number,
+		title: string,
+		volumeDir?: string
+	): Promise<{ fileName: string; shifted: number }> {
+		if (volumeDir) {
+			this.assertVolumeName(volumeDir);
 		}
-		const volumeDir = anchor.volumeDir;
-		const fileName = chapterFileName(plan.seq, title);
+		const shifted = (await this.listChapters(book)).some((c) => c.seq === seq)
+			? await this.shiftSeqsFrom(book, seq)
+			: 0;
+		const fileName = chapterFileName(seq, title);
 		await this.writeNewChapter(book, fileName, volumeDir, title);
-		await this.commitAndRefresh(`插入章节 ${chapterRelPath({ fileName, volumeDir })}`);
-		return { fileName, renumbered };
+		await this.adoptPlanSummary(book, { fileName, volumeDir });
+		return { fileName, shifted };
 	}
 
 	/** 落盘新章节文件（建目录 → 写模板 → 接上前后导航），新建与插章共用（导航重写后由调用方提交）。 */
@@ -1517,21 +1587,47 @@ export class LibraryService {
 		await fs.writeFile(this.chapterPath(book, fileName, volumeDir), md, 'utf8');
 	}
 
-	/** 批量顺延章节序号 +1：按序号降序重命名（避免同名冲突），同步摘要镜像、笔记关联与阅读进度；导航重写与提交由调用方负责。 */
-	private async shiftChapterSeqs(book: BookInfo, chapters: ChapterFile[]): Promise<void> {
+	/** 把 fromSeq 及其后的章节序号 +1：按序号降序改名（避免同名冲突），正文尚未创建的计划摘要一并顺延；同步摘要镜像、笔记关联与阅读进度。返回顺延的正文章数；导航重写与提交由调用方负责。 */
+	private async shiftSeqsFrom(book: BookInfo, fromSeq: number): Promise<number> {
+		const chapters = (await this.listChapters(book)).filter((chapter) => chapter.seq >= fromSeq);
 		const refs = new Map<string, { relPath: string; title: string }>();
-		for (const chapter of [...chapters].sort((a, b) => b.seq - a.seq)) {
-			const parsed = parseChapterFileName(chapter.fileName);
-			if (!parsed) {
+		const shiftedRels = new Set(chapters.map((chapter) => chapterRelPath(chapter)));
+		const moves = chapters.map((chapter) => ({
+			seq: chapter.seq,
+			run: async (): Promise<void> => {
+				const parsed = parseChapterFileName(chapter.fileName);
+				if (!parsed) {
+					return;
+				}
+				const newFileName = chapterFileName(chapter.seq + 1, parsed.title);
+				await this.relocateChapterFiles(book, chapter, { fileName: newFileName, volumeDir: chapter.volumeDir });
+				await this.rewriteSummaryOriginal(book, chapter.volumeDir, newFileName);
+				refs.set(chapterRelPath(chapter), {
+					relPath: chapterRelPath({ fileName: newFileName, volumeDir: chapter.volumeDir }),
+					title: parsed.title,
+				});
+			},
+		}));
+		for (const [rel, filePath] of await this.scanChapterSummaryFiles(book)) {
+			const parsed = parseChapterFileName(path.basename(rel));
+			if (!parsed || parsed.seq < fromSeq || shiftedRels.has(rel)) {
 				continue;
 			}
-			const newFileName = chapterFileName(chapter.seq + 1, parsed.title);
-			await this.relocateChapterFiles(book, chapter, { fileName: newFileName, volumeDir: chapter.volumeDir });
-			await this.rewriteSummaryOriginal(book, chapter.volumeDir, newFileName);
-			refs.set(chapterRelPath(chapter), {
-				relPath: chapterRelPath({ fileName: newFileName, volumeDir: chapter.volumeDir }),
-				title: parsed.title,
+			const index = rel.lastIndexOf('/');
+			const volumeDir = index < 0 ? undefined : rel.slice(0, index);
+			moves.push({
+				seq: parsed.seq,
+				run: async (): Promise<void> => {
+					await vscode.workspace.fs.rename(
+						vscode.Uri.file(filePath),
+						vscode.Uri.file(this.summaryPath(book, chapterFileName(parsed.seq + 1, parsed.title), volumeDir))
+					);
+				},
 			});
+		}
+		// 降序搬移，保证每个目标序号都已先让出
+		for (const move of moves.sort((a, b) => b.seq - a.seq)) {
+			await move.run();
 		}
 		const progress = this.getProgress(book.dir);
 		const migrated = progress ? refs.get(progress) : undefined;
@@ -1539,6 +1635,7 @@ export class LibraryService {
 			await this.setProgress(book.dir, migrated.relPath);
 		}
 		await this.updateNotesChapterRefs(book, refs);
+		return chapters.length;
 	}
 
 	/** 移动章节到目标分卷（根目录用 undefined），同步移动摘要镜像、重写全书导航、迁移进度与笔记关联。 */
@@ -1620,27 +1717,6 @@ export class LibraryService {
 		);
 	}
 
-	/** 全书章节摘要状态（键同 chapterRelPath）：摘要缺失为 missing，章节比摘要更新为 stale。已扫描过分卷时传入 volumes 避免重复扫描。 */
-	async listChapterSummaryStates(book: BookInfo, volumes?: ChapterVolume[]): Promise<Map<string, SummaryState>> {
-		const list = volumes ?? (await this.listVolumes(book));
-		const states = new Map<string, SummaryState>();
-		await mapLimit(
-			list.flatMap((volume) => volume.chapters),
-			SCAN_CONCURRENCY,
-			async (chapter) => {
-				const summaryMtime = await this.mtime(this.summaryPath(book, chapter.fileName, chapter.volumeDir));
-				if (summaryMtime === undefined) {
-					states.set(chapterRelPath(chapter), 'missing');
-					return;
-				}
-				const chapterMtime =
-					(await this.mtime(this.chapterPath(book, chapter.fileName, chapter.volumeDir))) ?? 0;
-				states.set(chapterRelPath(chapter), chapterMtime > summaryMtime ? 'stale' : 'ok');
-			}
-		);
-		return states;
-	}
-
 	/** 文件最后修改时间（毫秒）；文件不存在或不可读时返回 undefined。 */
 	private async mtime(filePath: string): Promise<number | undefined> {
 		try {
@@ -1660,6 +1736,321 @@ export class LibraryService {
 		return newest;
 	}
 
+	/** 摘要状态：摘要缺失为 missing，任一目标文件比摘要新为 stale。 */
+	private async summaryState(summaryFile: string, targets: string[]): Promise<SummaryState> {
+		const summaryMtime = await this.mtime(summaryFile);
+		if (summaryMtime === undefined) {
+			return 'missing';
+		}
+		return (await this.newestMtime(targets)) > summaryMtime ? 'stale' : 'ok';
+	}
+
+	/** 扫描 章节摘要/ 下已有的摘要文件（含正文尚未创建的计划摘要），返回 章节相对路径 → 摘要文件绝对路径。 */
+	private async scanChapterSummaryFiles(book: BookInfo): Promise<Map<string, string>> {
+		const found = new Map<string, string>();
+		const collect = async (dir: string, volumeDir: string | undefined): Promise<void> => {
+			let entries: Dirent[];
+			try {
+				entries = await fs.readdir(dir, { withFileTypes: true });
+			} catch {
+				return;
+			}
+			for (const entry of entries) {
+				if (entry.isDirectory()) {
+					await collect(path.join(dir, entry.name), entry.name);
+				} else if (parseChapterFileName(entry.name)) {
+					found.set(volumeDir ? `${volumeDir}/${entry.name}` : entry.name, path.join(dir, entry.name));
+				}
+			}
+		};
+		await collect(path.join(book.dir, CHAPTER_SUMMARIES_DIR), undefined);
+		return found;
+	}
+
+	/** 全书章节摘要状态（键同 chapterRelPath）：含只有计划摘要、正文尚未创建的章节（状态 planned）。已扫描过分卷时传入 volumes 避免重复扫描。 */
+	async listChapterSummaryStates(book: BookInfo, volumes?: ChapterVolume[]): Promise<Map<string, SummaryState>> {
+		const list = volumes ?? (await this.listVolumes(book));
+		const states = new Map<string, SummaryState>();
+		await mapLimit(
+			list.flatMap((volume) => volume.chapters),
+			SCAN_CONCURRENCY,
+			async (chapter) => {
+				states.set(
+					chapterRelPath(chapter),
+					await this.summaryState(this.summaryPath(book, chapter.fileName, chapter.volumeDir), [
+						this.chapterPath(book, chapter.fileName, chapter.volumeDir),
+					])
+				);
+			}
+		);
+		for (const rel of (await this.scanChapterSummaryFiles(book)).keys()) {
+			if (!states.has(rel)) {
+				states.set(rel, 'planned');
+			}
+		}
+		return states;
+	}
+
+	/** 摘要视图用：分卷（含只有计划摘要的未来分卷）+ 各自章节摘要条目（含计划章节），按卷序与章节序号排序。 */
+	async listChapterSummaries(book: BookInfo): Promise<ChapterSummaryGroup[]> {
+		const volumes = await this.listVolumes(book);
+		const states = await this.listChapterSummaryStates(book, volumes);
+		const groups = new Map<string, ChapterSummaryGroup>();
+		const groupOf = (name: string, dirName: string | undefined): ChapterSummaryGroup => {
+			const key = dirName ?? name;
+			let group = groups.get(key);
+			if (!group) {
+				group = { name, dirName, entries: [] };
+				groups.set(key, group);
+			}
+			return group;
+		};
+		for (const volume of volumes) {
+			groupOf(volume.name, volume.dirName).entries.push(
+				...volume.chapters.map((chapter) => ({ ...chapter, state: states.get(chapterRelPath(chapter)) ?? 'missing' }))
+			);
+		}
+		for (const [rel, state] of states) {
+			const parsed = parseChapterFileName(path.basename(rel));
+			if (state !== 'planned' || !parsed) {
+				continue;
+			}
+			const index = rel.lastIndexOf('/');
+			const dirName = index < 0 ? undefined : rel.slice(0, index);
+			groupOf(dirName ?? '第一卷', dirName).entries.push({
+				...parsed,
+				fileName: path.basename(rel),
+				volumeDir: dirName,
+				state,
+			});
+		}
+		for (const group of groups.values()) {
+			group.entries.sort(bySeq);
+		}
+		return [...groups.values()].sort(
+			(a, b) =>
+				volumeSortKey(a.dirName ?? a.name) - volumeSortKey(b.dirName ?? b.name) || a.name.localeCompare(b.name)
+		);
+	}
+
+	/** 卷摘要列表：现存分卷（含尚无章节的）+ 只有卷摘要文件、分卷尚未创建者，按卷序排序。 */
+	async listVolumeSummaries(book: BookInfo, volumes?: ChapterVolume[]): Promise<VolumeSummary[]> {
+		const list = volumes ?? (await this.listVolumes(book));
+		const withPlans = await this.volumesWithPlans(book, list);
+		const summaries = await mapLimit(
+			list,
+			SCAN_CONCURRENCY,
+			async (volume): Promise<VolumeSummary> => {
+				const fileName = volumeSummaryFileName(volume.dirName ?? volume.name);
+				const summaryFile = this.volumeSummaryPath(book, fileName);
+				const base = await this.summaryState(
+					summaryFile,
+					volume.chapters.map((c) => this.chapterPath(book, c.fileName, c.volumeDir))
+				);
+				// 卷内还有「有摘要无正文」的计划章节时该卷摘要即计划；摘要没建时仍是 missing
+				const state: SummaryState =
+					base !== 'missing' && withPlans.has(volume.dirName ?? '') ? 'planned' : base;
+				return { name: volume.name, dirName: volume.dirName, fileName, chapters: volume.chapters, state };
+			}
+		);
+		const known = new Set(summaries.map((summary) => summary.fileName));
+		let files: string[];
+		try {
+			files = await fs.readdir(path.join(book.dir, VOLUME_SUMMARIES_DIR));
+		} catch {
+			files = [];
+		}
+		for (const file of files) {
+			if (known.has(file) || !file.endsWith('.md')) {
+				continue;
+			}
+			const name = path.basename(file, '.md');
+			// 分卷尚未创建：卷内有计划章节即为计划，否则按「文件已存在」当作最新
+			const state: SummaryState = withPlans.has(name) ? 'planned' : 'ok';
+			summaries.push({ name, dirName: name, fileName: file, chapters: [], state });
+		}
+		return summaries.sort(
+			(a, b) =>
+				volumeSortKey(a.dirName ?? a.name) - volumeSortKey(b.dirName ?? b.name) || a.name.localeCompare(b.name)
+		);
+	}
+
+	/** 卷内还有「有摘要无正文」的计划章节的分卷（键为分卷目录名，章节根目录的虚拟卷为 ''）。 */
+	private async volumesWithPlans(book: BookInfo, volumes: ChapterVolume[]): Promise<Set<string>> {
+		const written = new Set(volumes.flatMap((volume) => volume.chapters.map((chapter) => chapterRelPath(chapter))));
+		const withPlans = new Set<string>();
+		for (const rel of (await this.scanChapterSummaryFiles(book)).keys()) {
+			if (written.has(rel)) {
+				continue;
+			}
+			const index = rel.lastIndexOf('/');
+			withPlans.add(index < 0 ? '' : rel.slice(0, index));
+		}
+		return withPlans;
+	}
+
+	/** 某序号上是否已有「有摘要无正文」的计划摘要：返回其相对路径（fileName 为待创建者的文件名，自身会被排除）。 */
+	private async planAtSeq(
+		book: BookInfo,
+		seq: number,
+		fileName: string,
+		volumeDir: string | undefined
+	): Promise<string | undefined> {
+		const self = volumeDir ? `${volumeDir}/${fileName}` : fileName;
+		for (const rel of (await this.scanChapterSummaryFiles(book)).keys()) {
+			if (rel !== self && parseChapterFileName(path.basename(rel))?.seq === seq) {
+				return rel;
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * 计划章节摘要的槽位（正文尚未创建时按「序号-标题」定位）：序号空闲时返回应写入的路径（顺带建好目录）；
+	 * 已被正文或另一个计划占用时返回占用者；ref 不是「序号-标题」（可带分卷目录）时返回 undefined。
+	 */
+	async chapterPlanSlot(
+		book: BookInfo,
+		ref: string
+	): Promise<{ filePath: string } | { occupied: { relPath: string; kind: 'chapter' | 'plan' } } | undefined> {
+		const segments = ref
+			.replace(/\.md$/i, '')
+			.split(/[/\\]+/)
+			.filter((segment) => segment.length > 0);
+		if (segments.some((segment) => segment === '.' || segment === '..')) {
+			return undefined;
+		}
+		const last = segments.pop();
+		const parsed = last ? parseChapterFileName(`${last}.md`) : undefined;
+		if (!parsed) {
+			return undefined;
+		}
+		const volumeDir = segments.length > 0 ? sanitizeRelativePath(segments.join('/')) : undefined;
+		if (segments.length > 0 && volumeDir === undefined) {
+			return undefined;
+		}
+		const planFileName = chapterFileName(parsed.seq, parsed.title);
+		const filePath = this.summaryPath(book, planFileName, volumeDir);
+		if (await pathExists(filePath)) {
+			return { filePath };
+		}
+		const chapter = (await this.listChapters(book)).find((c) => c.seq === parsed.seq);
+		if (chapter) {
+			return { occupied: { relPath: chapterRelPath(chapter), kind: 'chapter' } };
+		}
+		const plan = await this.planAtSeq(book, parsed.seq, planFileName, volumeDir);
+		if (plan) {
+			return { occupied: { relPath: plan, kind: 'plan' } };
+		}
+		await fs.mkdir(path.dirname(filePath), { recursive: true });
+		return { filePath };
+	}
+
+	/** 为尚未创建的分卷预建卷摘要的目标路径（顺带建好 卷摘要/ 目录，不创建文件）。 */
+	async volumePlanSummaryPath(book: BookInfo, name: string): Promise<string> {
+		const filePath = this.volumeSummaryPath(book, volumeSummaryFileName(name));
+		await fs.mkdir(path.dirname(filePath), { recursive: true });
+		return filePath;
+	}
+
+	/**
+	 * 建计划章节摘要（正文尚未创建）：位置可按参照章（after/before，序号有空档优先）或直接给序号（可落在存量中间）；
+	 * 目标序号被占用（正文或计划）时，先把该序号及其后的正文与计划一并顺延 +1（与该处插章同一套逻辑）。
+	 */
+	async createChapterPlan(
+		book: BookInfo,
+		title: string,
+		position?: ChapterPlanPosition
+	): Promise<{ filePath: string; fileName: string; shifted: number }> {
+		const chapters = await this.listChapters(book);
+		const seqs = chapters.map((c) => c.seq);
+		let seq: number;
+		let volumeDir: string | undefined;
+		let shiftFrom: number | undefined;
+		if (position && 'after' in position) {
+			const at = chapters.findIndex((c) => sameChapter(c, position.after));
+			if (at < 0) {
+				throw new Error(`找不到章节「${position.after.fileName}」`);
+			}
+			({ seq, shiftFrom } = planChapterInsertSeq(seqs, at + 1));
+			volumeDir = position.after.volumeDir;
+		} else if (position && 'before' in position) {
+			const at = chapters.findIndex((c) => sameChapter(c, position.before));
+			if (at < 0) {
+				throw new Error(`找不到章节「${position.before.fileName}」`);
+			}
+			({ seq, shiftFrom } = planChapterInsertSeq(seqs, at));
+			volumeDir = position.before.volumeDir;
+		} else {
+			seq = position?.seq ?? seqs.reduce((max, value) => Math.max(max, value), 0) + 1;
+			volumeDir = position?.volumeDir;
+			if (volumeDir) {
+				this.assertVolumeName(volumeDir);
+			}
+		}
+		const fileName = chapterFileName(seq, title);
+		const filePath = this.summaryPath(book, fileName, volumeDir);
+		// 该序号已被正文或另一个计划占用时顺延（自身已存在的计划摘要不算占用，重复调用保持幂等）
+		if (shiftFrom === undefined && !(await pathExists(filePath))) {
+			if (seqs.includes(seq) || (await this.planAtSeq(book, seq, fileName, volumeDir))) {
+				shiftFrom = seq;
+			}
+		}
+		const shifted = shiftFrom === undefined ? 0 : await this.shiftSeqsFrom(book, shiftFrom);
+		if (shifted > 0) {
+			// 序号变了：相邻章导航要跟着重写
+			await this.rewriteBookChapterNavs(book);
+		}
+		await fs.mkdir(path.dirname(filePath), { recursive: true });
+		if (!(await pathExists(filePath))) {
+			await fs.writeFile(filePath, buildChapterSummaryMarkdown(title, fileName), 'utf8');
+		}
+		await this.commitAndRefresh(`新建计划章节 ${chapterRelPath({ fileName, volumeDir })}`);
+		return { filePath, fileName, shifted };
+	}
+
+	/** 计划摘要引用的相对路径（`NNNN-标题`，可带分卷目录、`章节摘要/` 前缀与 `.md`）；格式不合法返回 undefined。 */
+	private chapterPlanRel(ref: string): string | undefined {
+		const segments = ref
+			.replace(/^[/\\]+/, '')
+			.replace(new RegExp(`^${CHAPTER_SUMMARIES_DIR}[/\\\\]+`), '')
+			.replace(/\.md$/i, '')
+			.split(/[/\\]+/)
+			.filter((segment) => segment.length > 0);
+		if (segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) {
+			return undefined;
+		}
+		const last = segments.pop() as string;
+		const parsed = parseChapterFileName(`${last}.md`);
+		if (!parsed) {
+			return undefined;
+		}
+		const fileName = chapterFileName(parsed.seq, parsed.title);
+		if (segments.length === 0) {
+			return fileName;
+		}
+		const volumeDir = sanitizeRelativePath(segments.join('/'));
+		return volumeDir === undefined ? undefined : `${volumeDir}/${fileName}`;
+	}
+
+	/** 删除计划章节摘要（有正文对应的摘要不单独删，随章节一起清理）；ref 见 `chapterPlanRel`，返回被删的摘要相对路径。 */
+	async removeChapterPlan(book: BookInfo, ref: string): Promise<string> {
+		const rel = this.chapterPlanRel(ref);
+		const filePath = rel ? (await this.scanChapterSummaryFiles(book)).get(rel) : undefined;
+		if (!rel || !filePath) {
+			throw new Error(`找不到计划摘要「${ref}」`);
+		}
+		if ((await this.listChapters(book)).some((chapter) => chapterRelPath(chapter) === rel)) {
+			throw new Error(`「${rel}」已有正文，摘要不能单独删除（删章节时才连同清理）`);
+		}
+		await fs.rm(filePath, { force: true });
+		await closeFileTabs(filePath);
+		// 计划删空后顺手收掉空的分卷镜像目录，免得它挡住分卷重命名的冲突检查
+		await fs.rmdir(path.dirname(filePath)).catch(() => undefined);
+		await this.commitAndRefresh(`删除计划章节 ${rel}`);
+		return rel;
+	}
+
 	/** 章节摘要文件路径（不存在则从模板创建），返回文件路径。 */
 	async ensureChapterSummary(book: BookInfo, chapter: ChapterFile): Promise<string> {
 		const filePath = this.summaryPath(book, chapter.fileName, chapter.volumeDir);
@@ -1675,51 +2066,198 @@ export class LibraryService {
 				buildChapterSummaryMarkdown(contentTitle ?? chapter.title, chapter.fileName, href),
 				'utf8'
 			);
+			await this.commitAndRefresh(`新建章节摘要 ${chapterRelPath(chapter)}`);
 		}
 		return filePath;
 	}
 
-	/** 区间摘要列表：全部章节每 10 章一个区间，摘要状态按区间内最新章节的修改时间判定。 */
-	async listIntervalSummaries(book: BookInfo): Promise<IntervalSummary[]> {
-		const chapters = await this.listChapters(book);
-		if (chapters.length === 0) {
-			return [];
-		}
-		const intervals: IntervalSummary[] = [];
-		for (let i = 0; i < chapters.length; i += INTERVAL_SUMMARY_SIZE) {
-			const chunk = chapters.slice(i, i + INTERVAL_SUMMARY_SIZE);
-			const startSeq = chunk[0].seq;
-			const endSeq = chunk[chunk.length - 1].seq;
-			intervals.push({
-				startSeq,
-				endSeq,
-				fileName: intervalSummaryFileName(startSeq, endSeq),
-				chapters: chunk,
-				state: 'missing',
-			});
-		}
-		await mapLimit(intervals, SCAN_CONCURRENCY, async (interval) => {
-			const summaryMtime = await this.mtime(path.join(book.dir, INTERVAL_SUMMARIES_DIR, interval.fileName));
-			if (summaryMtime === undefined) {
-				return;
-			}
-			const newest = await this.newestMtime(
-				interval.chapters.map((c) => this.chapterPath(book, c.fileName, c.volumeDir))
+	/** 卷摘要文件路径（不存在则从模板创建），返回文件路径。 */
+	async ensureVolumeSummary(
+		book: BookInfo,
+		volume: Pick<VolumeSummary, 'name' | 'dirName'>
+	): Promise<string> {
+		const fileName = volumeSummaryFileName(volume.dirName ?? volume.name);
+		const filePath = this.volumeSummaryPath(book, fileName);
+		if (!(await pathExists(filePath))) {
+			await fs.mkdir(path.dirname(filePath), { recursive: true });
+			const key = volume.dirName ?? volume.name;
+			const group = (await this.listChapterSummaries(book)).find(
+				(candidate) => (candidate.dirName ?? candidate.name) === key
 			);
-			interval.state = newest > summaryMtime ? 'stale' : 'ok';
+			const chapters = (group?.entries ?? []).map((entry) => ({
+				seq: entry.seq,
+				title: entry.title,
+				planned: entry.state === 'planned',
+			}));
+			await fs.writeFile(filePath, buildVolumeSummaryMarkdown(volume.name, chapters), 'utf8');
+			await this.commitAndRefresh(`新建卷摘要 ${fileName}`);
+		}
+		return filePath;
+	}
+
+	/** 删除卷计划摘要（卷内还没有正文，或卷内还有计划章节）；已有正文的卷摘要随分卷一起清理。 */
+	async removeVolumePlan(book: BookInfo, ref: string): Promise<string> {
+		const summaries = await this.listVolumeSummaries(book);
+		const target = summaries.find(
+			(summary) =>
+				summary.name === ref ||
+				summary.dirName === ref ||
+				summary.fileName === ref ||
+				summary.fileName === `${ref}.md`
+		);
+		if (!target) {
+			throw new Error(`找不到卷摘要「${ref}」（现有：${summaries.map((s) => s.fileName).join('、') || '无'}）`);
+		}
+		if (!(await pathExists(this.volumeSummaryPath(book, target.fileName)))) {
+			throw new Error(`卷摘要「${target.fileName}」尚未创建`);
+		}
+		if (target.state !== 'planned' && target.chapters.length > 0) {
+			throw new Error(`分卷「${target.name}」已有正文，卷摘要不能单独删除（删分卷时才连同清理）`);
+		}
+		await this.removeEntry(book, VOLUME_SUMMARIES_DIR, target.fileName);
+		return target.fileName;
+	}
+
+	/** 区间摘要目录下已有的区间文件：文件名 → 起止序号。 */
+	private async listIntervalFiles(book: BookInfo): Promise<Map<string, { startSeq: number; endSeq: number }>> {
+		const files = new Map<string, { startSeq: number; endSeq: number }>();
+		let entries: string[];
+		try {
+			entries = await fs.readdir(path.join(book.dir, INTERVAL_SUMMARIES_DIR));
+		} catch {
+			return files;
+		}
+		for (const entry of entries) {
+			const range = parseIntervalSummaryFileName(entry);
+			if (range) {
+				files.set(entry, range);
+			}
+		}
+		return files;
+	}
+
+	/** 区间起止校验：正整数、起始不大于结束。 */
+	private assertIntervalRange(startSeq: number, endSeq: number): void {
+		if (!Number.isInteger(startSeq) || !Number.isInteger(endSeq) || startSeq < 1 || endSeq < startSeq) {
+			throw new Error(`非法的区间「${startSeq}-${endSeq}」：起止须为正整数且起始不大于结束`);
+		}
+	}
+
+	/** 区间内的现存章节（按序号）。 */
+	async chaptersInRange(book: BookInfo, startSeq: number, endSeq: number): Promise<ChapterFile[]> {
+		const chapters = await this.listChapters(book);
+		return chapters.filter((chapter) => chapter.seq >= startSeq && chapter.seq <= endSeq);
+	}
+
+	/**
+	 * 区间摘要列表：默认按 INTERVAL_SUMMARY_SIZE 章一块提示未建区间（已被某个区间文件覆盖的块不再提示），
+	 * 外加任意起止的自定义区间（可重叠）。区间越出正文范围（含区间内章节尚未写）即计划。
+	 */
+	async listIntervalSummaries(book: BookInfo, chapters?: ChapterFile[]): Promise<IntervalSummary[]> {
+		const list = chapters ?? (await this.listChapters(book));
+		const seqs = list.map((chapter) => chapter.seq);
+		const minSeq = seqs.length > 0 ? Math.min(...seqs) : undefined;
+		const maxSeq = seqs.length > 0 ? Math.max(...seqs) : undefined;
+		const files = await this.listIntervalFiles(book);
+		const ranges: { startSeq: number; endSeq: number; fileName: string }[] = [];
+		for (let i = 0; i < list.length; i += INTERVAL_SUMMARY_SIZE) {
+			const chunk = list.slice(i, i + INTERVAL_SUMMARY_SIZE);
+			const range = { startSeq: chunk[0].seq, endSeq: chunk[chunk.length - 1].seq };
+			const fileName = intervalSummaryFileName(range.startSeq, range.endSeq);
+			const overlapped = [...files].some(
+				([, other]) => other.startSeq <= range.endSeq && range.startSeq <= other.endSeq
+			);
+			if (!files.has(fileName) && overlapped) {
+				continue;
+			}
+			ranges.push({ ...range, fileName });
+		}
+		for (const [fileName, range] of files) {
+			if (!ranges.some((candidate) => candidate.fileName === fileName)) {
+				ranges.push({ ...range, fileName });
+			}
+		}
+		const summaries = await mapLimit(ranges, SCAN_CONCURRENCY, async (range): Promise<IntervalSummary> => {
+			const inRange = list.filter((chapter) => chapter.seq >= range.startSeq && chapter.seq <= range.endSeq);
+			const summaryFile = path.join(book.dir, INTERVAL_SUMMARIES_DIR, range.fileName);
+			const summaryMtime = await this.mtime(summaryFile);
+			let state: SummaryState;
+			if (summaryMtime === undefined) {
+				state = 'missing';
+			} else if (
+				minSeq === undefined ||
+				range.startSeq < minSeq ||
+				range.endSeq > maxSeq!
+			) {
+				// 区间内还有尚未创建的章节：该摘要仍是计划
+				state = 'planned';
+			} else {
+				state = (await this.newestMtime(inRange.map((c) => this.chapterPath(book, c.fileName, c.volumeDir)))) >
+					summaryMtime
+					? 'stale'
+					: 'ok';
+			}
+			return { ...range, chapters: inRange, state };
 		});
-		return intervals;
+		return summaries.sort((a, b) => a.startSeq - b.startSeq || a.endSeq - b.endSeq);
 	}
 
 	/** 区间摘要文件路径（不存在则从模板创建），返回文件路径。 */
-	async ensureIntervalSummary(book: BookInfo, interval: IntervalSummary): Promise<string> {
-		const filePath = path.join(book.dir, INTERVAL_SUMMARIES_DIR, interval.fileName);
+	async ensureIntervalSummary(book: BookInfo, startSeq: number, endSeq: number): Promise<string> {
+		this.assertIntervalRange(startSeq, endSeq);
+		const fileName = intervalSummaryFileName(startSeq, endSeq);
+		const filePath = path.join(book.dir, INTERVAL_SUMMARIES_DIR, fileName);
 		if (!(await pathExists(filePath))) {
 			await fs.mkdir(path.dirname(filePath), { recursive: true });
-			const md = buildIntervalSummaryMarkdown(interval.startSeq, interval.endSeq, interval.chapters);
-			await fs.writeFile(filePath, md, 'utf8');
+			const chapters = await this.chaptersInRange(book, startSeq, endSeq);
+			await fs.writeFile(filePath, buildIntervalSummaryMarkdown(startSeq, endSeq, chapters), 'utf8');
+			await this.commitAndRefresh(`新建区间摘要 ${fileName}`);
 		}
 		return filePath;
+	}
+
+	/** 改区间（起止任意、可与其它区间重叠）：文件改名为新区间，重写标题与「章节范围」小节，摘要正文保留，原修改时间保留。 */
+	async editIntervalSummary(book: BookInfo, fileName: string, startSeq: number, endSeq: number): Promise<string> {
+		this.assertIntervalRange(startSeq, endSeq);
+		const name = path.basename(fileName);
+		const range = parseIntervalSummaryFileName(name);
+		if (!range) {
+			throw new Error(`「${name}」不是区间摘要文件名`);
+		}
+		const oldPath = path.join(book.dir, INTERVAL_SUMMARIES_DIR, name);
+		const targetName = intervalSummaryFileName(startSeq, endSeq);
+		const targetPath = path.join(book.dir, INTERVAL_SUMMARIES_DIR, targetName);
+		const before = await fs.stat(oldPath).catch(() => undefined);
+		if (before && targetName !== name) {
+			if (await pathExists(targetPath)) {
+				throw new Error(`区间摘要「${targetName}」已存在`);
+			}
+			await vscode.workspace.fs.rename(vscode.Uri.file(oldPath), vscode.Uri.file(targetPath));
+		}
+		const chapters = await this.chaptersInRange(book, startSeq, endSeq);
+		const md =
+			(await fs.readFile(targetPath, 'utf8').catch(() => undefined)) ??
+			buildIntervalSummaryMarkdown(range.startSeq, range.endSeq, await this.chaptersInRange(book, range.startSeq, range.endSeq));
+		await fs.writeFile(targetPath, rewriteIntervalRange(md, startSeq, endSeq, chapters), 'utf8');
+		if (before) {
+			// 只改了区间范围：保留原修改时间，免得把「待维护」的摘要刷成最新
+			await fs.utimes(targetPath, before.atime, before.mtime).catch(() => undefined);
+		}
+		await this.commitAndRefresh(`修改区间摘要 ${name} →「第 ${startSeq}–${endSeq} 章」`);
+		return targetPath;
+	}
+
+	/** 删除区间计划摘要（只有越出现存章节范围的计划能删；已覆盖正文的区间改用「修改区间」调整起止）。 */
+	async removeIntervalSummary(book: BookInfo, fileName: string): Promise<void> {
+		const name = path.basename(fileName);
+		const target = (await this.listIntervalSummaries(book)).find((interval) => interval.fileName === name);
+		if (!target || target.state === 'missing') {
+			throw new Error(`找不到区间摘要「${name}」`);
+		}
+		if (target.state !== 'planned') {
+			throw new Error(`区间「${name}」已覆盖正文，不能单独删除（可用「修改区间」调整起止）`);
+		}
+		await this.removeEntry(book, INTERVAL_SUMMARIES_DIR, name);
 	}
 
 	/** 新建笔记 md（已存在则不覆盖），可选分类路径（可多级）与关联章节，返回文件路径。 */
@@ -1763,7 +2301,7 @@ export class LibraryService {
 		}
 	}
 
-	/** 重命名分卷目录，并同步重命名 章节摘要/ 下的镜像目录、重写跨卷导航、迁移进度键。 */
+	/** 重命名分卷目录，并同步重命名摘要镜像目录 / 卷摘要 / 版本目录，重写跨卷导航，迁移进度键。 */
 	async renameVolume(book: BookInfo, oldName: string, newName: string): Promise<string> {
 		this.assertVolumeName(oldName);
 		const target = sanitizeFileTitle(newName);
@@ -1776,14 +2314,44 @@ export class LibraryService {
 		if (await pathExists(newDir)) {
 			throw new Error(`分卷「${target}」已存在`);
 		}
+		// 目标卷名下已有卷摘要 / 摘要镜像 / 版本目录（多半是「未来卷」的计划与草稿）时先让用户决定，
+		// 否则静默吞掉失败会留下错位的摘要与版本
+		const volumeSummaryFrom = this.volumeSummaryPath(book, volumeSummaryFileName(oldName));
+		const volumeSummaryTo = this.volumeSummaryPath(book, volumeSummaryFileName(target));
+		if ((await pathExists(volumeSummaryFrom)) && (await pathExists(volumeSummaryTo))) {
+			throw new Error(
+				`分卷「${target}」已有卷摘要（${path.basename(volumeSummaryTo)}），请先删除或改名后再重命名分卷`
+			);
+		}
+		const summaryDirFrom = path.join(book.dir, CHAPTER_SUMMARIES_DIR, oldName);
+		const summaryDirTo = path.join(book.dir, CHAPTER_SUMMARIES_DIR, target);
+		if ((await pathExists(summaryDirFrom)) && (await pathExists(summaryDirTo))) {
+			throw new Error(
+				`分卷「${target}」已有章节摘要目录（${CHAPTER_SUMMARIES_DIR}/${target}），请先删除或改名后再重命名分卷`
+			);
+		}
+		const versionsDirFrom = path.join(book.dir, VERSIONS_DIR, oldName);
+		const versionsDirTo = path.join(book.dir, VERSIONS_DIR, target);
+		if ((await pathExists(versionsDirFrom)) && (await pathExists(versionsDirTo))) {
+			throw new Error(
+				`分卷「${target}」已有章节版本目录（${VERSIONS_DIR}/${target}），请先删除或改名后再重命名分卷`
+			);
+		}
 		await vscode.workspace.fs.rename(vscode.Uri.file(oldDir), vscode.Uri.file(newDir));
 		try {
-			await vscode.workspace.fs.rename(
-				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, oldName)),
-				vscode.Uri.file(path.join(book.dir, CHAPTER_SUMMARIES_DIR, target))
-			);
+			await vscode.workspace.fs.rename(vscode.Uri.file(summaryDirFrom), vscode.Uri.file(summaryDirTo));
 		} catch {
 			// 无摘要镜像目录时忽略
+		}
+		try {
+			await vscode.workspace.fs.rename(vscode.Uri.file(volumeSummaryFrom), vscode.Uri.file(volumeSummaryTo));
+		} catch {
+			// 无卷摘要时忽略
+		}
+		try {
+			await vscode.workspace.fs.rename(vscode.Uri.file(versionsDirFrom), vscode.Uri.file(versionsDirTo));
+		} catch {
+			// 无版本目录时忽略
 		}
 		await this.rewriteBookChapterNavs(book);
 		// 该卷各章摘要的原文链接 href 更新为镜像新位置，笔记关联中的卷名前缀同步
@@ -1800,7 +2368,7 @@ export class LibraryService {
 		return target;
 	}
 
-	/** 删除分卷目录及其摘要镜像，重写跨卷导航并处理卷内进度；卷内还有章节且未确认时抛错。 */
+	/** 删除分卷目录及其摘要镜像、卷摘要与版本目录，重写跨卷导航并处理卷内进度；卷内还有章节且未确认时抛错。 */
 	async deleteVolume(book: BookInfo, name: string, deleteChapters: boolean): Promise<void> {
 		this.assertVolumeName(name);
 		const dir = path.join(book.dir, CHAPTERS_DIR, name);
@@ -1816,6 +2384,8 @@ export class LibraryService {
 		}
 		await fs.rm(dir, { recursive: true, force: true });
 		await fs.rm(path.join(book.dir, CHAPTER_SUMMARIES_DIR, name), { recursive: true, force: true });
+		await fs.rm(path.join(book.dir, VERSIONS_DIR, name), { recursive: true, force: true });
+		await fs.rm(this.volumeSummaryPath(book, volumeSummaryFileName(name)), { force: true });
 		if (chapterCount > 0) {
 			await this.rewriteBookChapterNavs(book);
 			await this.updateNotesVolumeRef(book, name, undefined);

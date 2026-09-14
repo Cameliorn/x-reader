@@ -270,9 +270,45 @@ export function intervalSummaryFileName(startSeq: number, endSeq: number): strin
 	return `${String(startSeq).padStart(4, '0')}-${String(endSeq).padStart(4, '0')}.md`;
 }
 
-/** 章节摘要模板：标题 + 原文链接 + 摘要小节。 */
-export function buildChapterSummaryMarkdown(title: string, chapterFile: string, chapterHref: string): string {
-	return `# ${title} · 摘要\n\n> 原文：[${escapeMdLinkText(chapterFile)}](<${chapterHref}>)\n\n## 摘要\n\n`;
+/** 解析区间摘要文件名（`NNNN-MMMM.md`）为起止序号；非区间摘要文件返回 undefined。 */
+export function parseIntervalSummaryFileName(fileName: string): { startSeq: number; endSeq: number } | undefined {
+	const match = /^(\d+)-(\d+)\.md$/.exec(fileName);
+	if (!match) {
+		return undefined;
+	}
+	return { startSeq: Number.parseInt(match[1], 10), endSeq: Number.parseInt(match[2], 10) };
+}
+
+/** 卷摘要文件名：`<卷目录名>.md`（默认卷用其卷名，即 第一卷.md）。 */
+export function volumeSummaryFileName(volumeKey: string): string {
+	return `${sanitizeFileTitle(volumeKey)}.md`;
+}
+
+/** 章节摘要模板：标题 + 原文链接 + 摘要小节；章节尚未创建（计划）时原文链接留空占位。 */
+export function buildChapterSummaryMarkdown(title: string, chapterFile: string, chapterHref?: string): string {
+	const original = chapterHref ? `[${escapeMdLinkText(chapterFile)}](<${chapterHref}>)` : '（尚未创建）';
+	return `# ${title} · 摘要\n\n> 原文：${original}\n\n## 摘要\n\n`;
+}
+
+/** 卷摘要模板：章节范围列表 + 摘要小节（计划写在章节计划与区间计划里，卷摘要不含计划）。 */
+export function buildVolumeSummaryMarkdown(
+	volumeName: string,
+	chapters: { seq: number; title: string; planned?: boolean }[]
+): string {
+	const list =
+		chapters.length > 0
+			? chapters
+				.map((c) => `- ${String(c.seq).padStart(4, '0')} ${c.title}${c.planned ? '（计划）' : ''}`)
+				.join('\n')
+			: '- （尚无章节）';
+	return `# ${volumeName} · 卷摘要\n\n## 章节范围\n\n${list}\n\n## 摘要\n\n`;
+}
+
+/** 区间摘要的「章节范围」列表；无章节时给占位（区间可以有尚未创建的章节）。 */
+function intervalChapterList(chapters: { seq: number; title: string }[]): string {
+	return chapters.length > 0
+		? chapters.map((c) => `- ${String(c.seq).padStart(4, '0')} ${c.title}`).join('\n')
+		: '- （尚无章节）';
 }
 
 /** 区间摘要模板：章节范围列表 + 摘要小节。 */
@@ -281,8 +317,32 @@ export function buildIntervalSummaryMarkdown(
 	endSeq: number,
 	chapters: { seq: number; title: string }[]
 ): string {
-	const list = chapters.map((c) => `- ${String(c.seq).padStart(4, '0')} ${c.title}`).join('\n');
-	return `# 第 ${startSeq}–${endSeq} 章 · 区间摘要\n\n## 章节范围\n\n${list}\n\n## 摘要\n\n`;
+	return `# 第 ${startSeq}–${endSeq} 章 · 区间摘要\n\n## 章节范围\n\n${intervalChapterList(chapters)}\n\n## 摘要\n\n`;
+}
+
+/** 重写区间摘要的标题行与「章节范围」小节（改区间起止时用），其它内容（摘要正文）原样保留。 */
+export function rewriteIntervalRange(
+	md: string,
+	startSeq: number,
+	endSeq: number,
+	chapters: { seq: number; title: string }[]
+): string {
+	const lines = md.replace(/\r\n/g, '\n').split('\n');
+	if (lines[0]?.startsWith('# ')) {
+		lines[0] = `# 第 ${startSeq}–${endSeq} 章 · 区间摘要`;
+	}
+	const body = ['', ...intervalChapterList(chapters).split('\n'), ''];
+	const heading = lines.findIndex((line) => /^##\s*章节范围\s*$/.test(line));
+	if (heading < 0) {
+		lines.splice(1, 0, '', '## 章节范围', ...body);
+	} else {
+		let end = heading + 1;
+		while (end < lines.length && !lines[end].startsWith('## ')) {
+			end++;
+		}
+		lines.splice(heading + 1, end - heading - 1, ...body);
+	}
+	return lines.join('\n');
 }
 
 /** 笔记关联的章节信息。 */

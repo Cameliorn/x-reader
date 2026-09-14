@@ -2,7 +2,7 @@
   "name": "x-reader",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.3.2",
+  "version": "1.3.5",
   "publisher": "cameliorn",
   "license": "MIT",
   "repository": {
@@ -106,7 +106,7 @@
       },
       {
         "view": "xReader.summaries",
-        "when": "!xReader.noBook && xReader.emptyChapters",
+        "when": "!xReader.noBook && xReader.emptySummaries",
         "contents": "%welcome.summaries.empty%"
       },
       {
@@ -302,6 +302,36 @@
         "icon": "resources/icons/add-note.svg"
       },
       {
+        "command": "xReader.newChapterPlan",
+        "title": "%command.newChapterPlan.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-chapter.svg"
+      },
+      {
+        "command": "xReader.writePlannedChapter",
+        "title": "%command.writePlannedChapter.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-chapter.svg"
+      },
+      {
+        "command": "xReader.newIntervalSummary",
+        "title": "%command.newIntervalSummary.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-category.svg"
+      },
+      {
+        "command": "xReader.editIntervalSummary",
+        "title": "%command.editIntervalSummary.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/pencil.svg"
+      },
+      {
+        "command": "xReader.newVolumeSummary",
+        "title": "%command.newVolumeSummary.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/add-volume.svg"
+      },
+      {
         "command": "xReader.newChapter",
         "title": "%command.newChapter.title%",
         "category": "X Reader",
@@ -334,6 +364,12 @@
       {
         "command": "xReader.deleteIntervalSummary",
         "title": "%command.deleteIntervalSummary.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/trash.svg"
+      },
+      {
+        "command": "xReader.deleteVolumeSummary",
+        "title": "%command.deleteVolumeSummary.title%",
         "category": "X Reader",
         "icon": "resources/icons/trash.svg"
       },
@@ -408,6 +444,11 @@
         "category": "X Reader"
       },
       {
+        "command": "xReader.openVolumeSummary",
+        "title": "%command.openVolumeSummary.title%",
+        "category": "X Reader"
+      },
+      {
         "command": "xReader.snapshot",
         "title": "%command.snapshot.title%",
         "category": "X Reader",
@@ -455,7 +496,7 @@
         "toolReferenceName": "getCurrentChapter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/book.svg",
-        "modelDescription": "获取当前正在阅读的书：优先从活动编辑器解析——只要打开的是某本书内的文件（章节/元数据/世界书/角色卡/章节摘要/区间摘要/笔记），即可定位所属书与打开的文件；否则回退当前书架选中的书。返回书文件夹名、书目录、本书 元数据.md 的字段与各小节（简介、说明等，不必再用文件工具读一遍）、当前打开文件、当前章节（相对路径、序号、标题、摘要状态）与进度位置。无参数；先调用它取得上下文，可省略其他工具的 book 参数；要操作其他书时先调用 xReader_listBooks 或在 book 参数中显式指定书文件夹名。",
+        "modelDescription": "获取当前正在阅读的书：优先从活动编辑器解析——只要打开的是某本书内的文件（章节/元数据/世界书/角色卡/章节摘要/区间摘要/卷摘要/笔记），即可定位所属书与打开的文件；否则回退当前书架选中的书。返回书文件夹名、书目录、本书 元数据.md 的字段与各小节（简介、说明等，不必再用文件工具读一遍）、当前打开文件、当前章节（相对路径、序号、标题、摘要状态）与进度位置。无参数；先调用它取得上下文，可省略其他工具的 book 参数；要操作其他书时先调用 xReader_listBooks 或在 book 参数中显式指定书文件夹名。",
         "inputSchema": {
           "type": "object",
           "properties": {}
@@ -479,7 +520,7 @@
         "toolReferenceName": "listVolumes",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/volume.svg",
-        "modelDescription": "列出某本书的分卷（章节/ 下的子目录；章节根目录的文件归入第一项）。返回分卷名、目录名与章节数。",
+        "modelDescription": "列出某本书的分卷（章节/ 下的子目录；章节根目录的文件归入第一项）。返回分卷名、目录名、章节数与卷摘要状态（｜卷摘要✓ = 最新、｜卷摘要待维护 = 卷内章节有改动、｜卷摘要计划 = 卷内还有尚未写正文的计划章节）；只有卷摘要文件、分卷尚未创建的未来卷也会列出（目录显示「分卷尚未创建」）。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -496,7 +537,7 @@
         "toolReferenceName": "listChapters",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/chapters.svg",
-        "modelDescription": "列出某本书的章节（按分卷分组），每行含章节相对路径、序号、标题、摘要状态（｜摘要待维护 = 摘要过期、｜摘要✓ = 最新、无标记 = 未创建）与备选版本数。volume 可按分卷名 / 目录名过滤。",
+        "modelDescription": "列出某本书的章节（按分卷分组），每行含章节相对路径、序号、标题、摘要状态（｜摘要待维护 = 摘要过期、｜摘要✓ = 最新、无标记 = 未创建）与备选版本数；分卷标题行附该卷的卷摘要状态。volume 可按分卷名 / 目录名过滤。尚未写正文的计划章节不在本清单里，用 readSummary 的 scope=plan 查看。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -517,7 +558,7 @@
         "toolReferenceName": "readSummary",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/summaries.svg",
-        "modelDescription": "读取摘要：scope=chapter 时用 chapter 指定章节读其章节摘要；scope=interval 时读区间摘要（每 10 章一个，range 用 NNNN-MMMM 或首尾序号指定，省略 range 则列出全部区间与状态）。摘要文件未创建时不报错，返回应写入的路径与所需信息，由你用文件工具写入；摘要写入之后章节又有改动时会在内容前提示「已过期」，需对照正文核对并按需重写。",
+        "modelDescription": "读取摘要：scope=chapter 时用 chapter 指定章节读其章节摘要；scope=interval 时读区间摘要（区间按起止序号记名、长度任意且可重叠，range 用 NNNN-MMMM 或首尾序号指定，省略 range 则列出全部区间与状态）；scope=volume 时读卷摘要（一卷一档，volume 用卷名 / 目录名 / 文件名指定，省略则列出全部卷与状态）；scope=plan 时列出全部计划摘要（目标尚未写全，写入的摘要即计划）。摘要文件未创建时不报错，返回应写入的路径与所需信息，由你用文件工具写入；摘要写入之后目标又有改动时会在内容前提示「已过期」，目标还有没写的章节 / 正文时会提示「这是计划摘要」。计划章节用“序号-标题”形式引用（如 0201-抵达）——序号已被占用时按提示改用 xReader_manageChapter（action=insert，plan=true）在该位置插入计划（其后的章节序号顺延）；正文创建时计划摘要会自动接到同名正文上。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -525,9 +566,11 @@
               "type": "string",
               "enum": [
                 "chapter",
-                "interval"
+                "interval",
+                "volume",
+                "plan"
               ],
-              "description": "chapter=章节摘要（用 chapter 指定章节）、interval=区间摘要（用 range 指定区间）"
+              "description": "chapter=章节摘要（用 chapter 指定章节）、interval=区间摘要（用 range 指定区间）、volume=卷摘要（用 volume 指定分卷）、plan=列出全部计划摘要"
             },
             "book": {
               "type": "string",
@@ -535,11 +578,15 @@
             },
             "chapter": {
               "type": "string",
-              "description": "章节（相对路径、文件名或标题；scope=chapter）"
+              "description": "章节（相对路径、文件名或标题；scope=chapter。写计划时用「序号-标题」形式引用尚未创建的章节，如 0201-抵达）"
             },
             "range": {
               "type": "string",
-              "description": "区间（如 0011-0020 或 11-20；scope=interval，省略时列出全部区间）"
+              "description": "区间（如 0011-0020 或 11-20；长度任意、可与其它区间重叠；scope=interval，省略时列出全部区间）"
+            },
+            "volume": {
+              "type": "string",
+              "description": "分卷（卷名、目录名或摘要文件名；scope=volume，省略时列出全部卷与状态；分卷尚未创建时给出可预建的卷摘要路径）"
             }
           },
           "required": [
@@ -643,7 +690,7 @@
         "toolReferenceName": "manageVolume",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/add-volume.svg",
-        "modelDescription": "新建 / 重命名 / 删除分卷（章节/ 下的子目录），用 action 区分：create 按 name 新建分卷；rename 把 volume 重命名为 newName（章节摘要镜像、跨卷导航、笔记中的卷名引用与阅读进度同步迁移）；delete 删除 volume，卷内还有章节时必须显式传 deleteChapters=true 才连同章节一起删除（执行前向用户确认）。volume 可用卷名或目录名（见 xReader_listVolumes）。章节根目录里散落的章节会被列成一个虚拟卷，它不是真实目录，不能重命名或删除。book 省略时为当前书架选中的书。",
+        "modelDescription": "新建 / 重命名 / 删除分卷（章节/ 下的子目录），用 action 区分：create 按 name 新建分卷；rename 把 volume 重命名为 newName（章节摘要镜像、跨卷导航、笔记中的卷名引用与阅读进度同步迁移）；delete 删除 volume，卷内还有章节时必须显式传 deleteChapters=true 才连同章节一起删除；deletePlan 删除卷摘要文件（仅当它是计划：卷内还没有正文、或卷内还有尚未写正文的计划章节；有正文的卷摘要只随分卷删除清理）（执行前向用户确认）。volume 可用卷名或目录名（见 xReader_listVolumes）。章节根目录里散落的章节会被列成一个虚拟卷，它不是真实目录，不能重命名或删除。book 省略时为当前书架选中的书。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -652,9 +699,10 @@
               "enum": [
                 "create",
                 "rename",
-                "delete"
+                "delete",
+                "deletePlan"
               ],
-              "description": "操作类型：create 用 name 新建｜rename 用 newName 重命名｜delete 删除"
+              "description": "操作类型：create 用 name 新建｜rename 用 newName 重命名｜delete 删除｜deletePlan 删除卷计划摘要（只有卷内还没有正文、或卷内还有计划章节才行）"
             },
             "book": {
               "type": "string",
@@ -666,7 +714,7 @@
             },
             "volume": {
               "type": "string",
-              "description": "目标分卷（卷名或目录名；action=rename/delete）"
+              "description": "目标分卷（卷名或目录名；action=rename/delete/deletePlan）"
             },
             "newName": {
               "type": "string",
@@ -688,7 +736,7 @@
         "toolReferenceName": "manageChapter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/add-chapter.svg",
-        "modelDescription": "章节的结构化操作，用 action 区分：create 按 title 新建章节（可选 volume 归入指定分卷，省略时接在全书最后）；insert 在 after 或 before 指定的参照章节前 / 后插入 title（两者只给一个，值为章节相对路径、文件名或标题；新章节归入参照章节所在分卷，序号无空档时自动顺延并同步摘要镜像 / 笔记关联 / 进度）；rename 把 chapter 重命名为 newTitle（文件名、相邻导航、摘要镜像、笔记引用与进度同步）；move 把 chapter 移到 volume 分卷（序号不变）；delete 删除 chapter 及其摘要镜像（执行前向用户确认）。create / insert 后返回新章节路径，正文用文件工具写入。注意：不要用文件工具直接新建 / 改名 / 移动 / 删除 章节/ 下的 md，否则导航、摘要镜像、进度与笔记关联会失联。",
+        "modelDescription": "章节的结构化操作，用 action 区分：create 按 title 新建章节（可选 volume 归入指定分卷，省略时接在全书最后）；insert 在 after 或 before 指定的参照章节前 / 后插入 title（两者只给一个，值为章节相对路径、文件名或标题），也可以直接给 seq 指定章节序号（可落在存量中间或留出空洞）——序号被占用时该序号及其后的正文与计划摘要一并顺延 +1（同步摘要镜像 / 笔记关联 / 进度），同序号若有计划摘要会自动接手成为该章摘要；给 plan=true 时只建「计划章节摘要」而不写正文（位置同样可用 after/before/seq，都不给则接在末尾）；rename 把 chapter 重命名为 newTitle（文件名、相邻导航、摘要镜像、笔记引用与进度同步）；move 把 chapter 移到 volume 分卷（序号不变）；delete 删除 chapter 及其摘要镜像；deletePlan 只删「有摘要无正文」的计划章节摘要（正文对应的摘要不单独删，删章节时才连同清理）（执行前向用户确认）。insert 后返回新章节路径，正文用文件工具写入。注意：不要用文件工具直接新建 / 改名 / 移动 / 删除 章节/ 下的 md，否则导航、摘要镜像、进度与笔记关联会失联。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -699,9 +747,10 @@
                 "insert",
                 "rename",
                 "move",
-                "delete"
+                "delete",
+                "deletePlan"
               ],
-              "description": "操作类型：create 用 title 新建｜insert 用 title + after/before 插入｜rename 用 newTitle 改名｜move 用 volume 换分卷｜delete 删除"
+              "description": "操作类型：create 用 title 新建｜insert 用 title + after/before/seq 插入｜rename 用 newTitle 改名｜move 用 volume 换分卷｜delete 删除｜deletePlan 删除计划章节摘要（正文尚未创建的计划）"
             },
             "book": {
               "type": "string",
@@ -710,6 +759,14 @@
             "title": {
               "type": "string",
               "description": "章节标题（action=create/insert）"
+            },
+            "seq": {
+              "type": "integer",
+              "description": "章节序号（action=insert，可代替 after/before 直接指定位置；正整数字号，被占用时其后的章节顺延 +1）"
+            },
+            "plan": {
+              "type": "boolean",
+              "description": "action=insert 时只建计划章节摘要（正文留待后写）：位置可用 after/before/seq，都不给则接在全书最后"
             },
             "volume": {
               "type": "string",
@@ -725,7 +782,7 @@
             },
             "chapter": {
               "type": "string",
-              "description": "目标章节（相对路径、文件名或标题；action=rename/move/delete）"
+              "description": "目标章节（相对路径、文件名或标题；action=rename/move/delete；action=deletePlan 用「序号-标题」引用计划，可带分卷目录）"
             },
             "newTitle": {
               "type": "string",
@@ -781,6 +838,47 @@
           "required": [
             "action",
             "chapter"
+          ]
+        }
+      },
+      {
+        "name": "xReader_manageInterval",
+        "displayName": "%languageModelTools.manageInterval.displayName%",
+        "toolReferenceName": "manageInterval",
+        "canBeReferencedInPrompt": true,
+        "icon": "resources/icons/summary-interval.svg",
+        "modelDescription": "区间摘要管理：区间按起止章节序号记名（文件名 NNNN-MMMM.md），长度任意（默认提示的区间为每 10 章一块）、可与其它区间重叠、也可覆盖尚未创建的章节（那时它就是计划）。用 action 区分：create 用 start + end 建区间摘要（已存在不覆盖）；editRange 把 range 指定的区间改成 start–end（文件改名，标题与「章节范围」小节重写，摘要正文保留）；delete 删除区间计划摘要（只有起止越出现存章节范围的计划能删，已覆盖正文的区间改用 editRange 调整起止）（执行前向用户确认）。摘要正文用文件工具写入；没有特定区间时用 readSummary 的 scope=interval 读 / 列。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "create",
+                "editRange",
+                "delete"
+              ],
+              "description": "操作类型：create 用 start + end 新建｜editRange 把 range 改成 start–end｜delete 删除计划区间摘要（只有起止越出现存章节范围的计划能删）"
+            },
+            "book": {
+              "type": "string",
+              "description": "书文件夹名，省略时使用当前书架选中的书"
+            },
+            "range": {
+              "type": "string",
+              "description": "目标区间（如 0011-0020 / 11-20 / 0011-0020.md；action=editRange/delete）"
+            },
+            "start": {
+              "type": "integer",
+              "description": "区间起始章节序号（正整数；action=create/editRange）"
+            },
+            "end": {
+              "type": "integer",
+              "description": "区间结束章节序号（不小于 start；action=create/editRange）"
+            }
+          },
+          "required": [
+            "action"
           ]
         }
       },
@@ -995,6 +1093,21 @@
           "command": "xReader.newVolume",
           "when": "view == xReader.chapters && !xReader.noBook",
           "group": "navigation@2"
+        },
+        {
+          "command": "xReader.newChapterPlan",
+          "when": "view == xReader.summaries && !xReader.noBook",
+          "group": "navigation@1"
+        },
+        {
+          "command": "xReader.newIntervalSummary",
+          "when": "view == xReader.summaries && !xReader.noBook",
+          "group": "navigation@2"
+        },
+        {
+          "command": "xReader.newVolumeSummary",
+          "when": "view == xReader.summaries && !xReader.noBook",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -1089,13 +1202,28 @@
           "group": "inline@2"
         },
         {
+          "command": "xReader.writePlannedChapter",
+          "when": "view == xReader.summaries && viewItem == plannedChapterSummary",
+          "group": "inline@1"
+        },
+        {
           "command": "xReader.deleteChapterSummary",
-          "when": "view == xReader.summaries && viewItem == chapterSummary",
+          "when": "view == xReader.summaries && viewItem == plannedChapterSummary",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.editIntervalSummary",
+          "when": "view == xReader.summaries && viewItem =~ /^(intervalSummary|plannedIntervalSummary)$/",
           "group": "inline@1"
         },
         {
           "command": "xReader.deleteIntervalSummary",
-          "when": "view == xReader.summaries && viewItem == intervalSummary",
+          "when": "view == xReader.summaries && viewItem == plannedIntervalSummary",
+          "group": "inline@2"
+        },
+        {
+          "command": "xReader.deleteVolumeSummary",
+          "when": "view == xReader.summaries && viewItem == plannedVolumeSummary",
           "group": "inline@1"
         },
         {

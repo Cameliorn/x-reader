@@ -64,8 +64,43 @@ export interface EntryCategory {
 	path: string;
 }
 
-/** 摘要维护状态：未创建 / 最新 / 待维护（摘要创建后章节又有改动）。 */
-export type SummaryState = 'missing' | 'ok' | 'stale';
+/**
+ * 摘要维护状态：
+ * - missing：摘要未创建
+ * - planned：摘要已创建但其目标（章节正文 / 区间内章节 / 卷内计划章节）尚未写全，该摘要即计划
+ * - ok：摘要不旧于目标
+ * - stale：目标比摘要新，摘要待维护
+ */
+export type SummaryState = 'missing' | 'planned' | 'ok' | 'stale';
+
+/** 章节摘要条目：章节文件 + 摘要状态（planned 表示正文尚未创建，摘要即该章计划）。 */
+export interface ChapterSummaryEntry extends ChapterFile {
+	state: SummaryState;
+}
+
+/** 章节摘要分组：分卷（分卷本身可能尚不存在，只有计划摘要）与组内章节摘要条目。 */
+export interface ChapterSummaryGroup {
+	/** 卷名（默认卷为 第一卷） */
+	name: string;
+	/** 卷目录名；undefined 表示默认卷（章节目录根） */
+	dirName: string | undefined;
+	/** 卷内章节摘要条目（含仅有计划摘要的章节），按序号排序 */
+	entries: ChapterSummaryEntry[];
+}
+
+/** 卷摘要：一卷一档（`卷摘要/<卷目录名>.md`）；卷内还有计划章节（正文未写）时该摘要即计划。 */
+export interface VolumeSummary {
+	/** 卷名（默认卷为 第一卷） */
+	name: string;
+	/** 卷目录名；undefined 表示默认卷（章节目录根） */
+	dirName: string | undefined;
+	/** 摘要文件名，如 第三卷.md */
+	fileName: string;
+	/** 卷内章节（分卷尚未创建时为空） */
+	chapters: ChapterFile[];
+	/** 摘要状态：卷内任一章比摘要新为 stale，分卷尚无章节为 planned */
+	state: SummaryState;
+}
 
 /** 区间摘要：每 10 章一个区间，摘要文件位于 区间摘要/ 下。 */
 export interface IntervalSummary {
