@@ -1254,7 +1254,8 @@ export class LibraryService {
 		if (oldTitle) {
 			const newTitle = parseChapterFileName(fileName)?.title;
 			if (newTitle) {
-				updated = updated.replace(`# ${oldTitle} · 摘要`, () => `# ${newTitle} · 摘要`);
+				// 原标题可能含被文件名清洗掉的字符，故按 H1 行锚替换，不比对 oldTitle 原文
+				updated = updated.replace(/^#\s.*·\s摘要\s*$/m, () => `# ${newTitle} · 摘要`);
 			}
 		}
 		if (updated !== md) {
@@ -1914,6 +1915,8 @@ export class LibraryService {
 		ref: string
 	): Promise<{ filePath: string } | { occupied: { relPath: string; kind: 'chapter' | 'plan' } } | undefined> {
 		const segments = ref
+			.replace(/^[/\\]+/, '')
+			.replace(new RegExp(`^${CHAPTER_SUMMARIES_DIR}[/\\\\]+`), '')
 			.replace(/\.md$/i, '')
 			.split(/[/\\]+/)
 			.filter((segment) => segment.length > 0);
@@ -2155,9 +2158,6 @@ export class LibraryService {
 	 */
 	async listIntervalSummaries(book: BookInfo, chapters?: ChapterFile[]): Promise<IntervalSummary[]> {
 		const list = chapters ?? (await this.listChapters(book));
-		const seqs = list.map((chapter) => chapter.seq);
-		const minSeq = seqs.length > 0 ? Math.min(...seqs) : undefined;
-		const maxSeq = seqs.length > 0 ? Math.max(...seqs) : undefined;
 		const files = await this.listIntervalFiles(book);
 		const ranges: { startSeq: number; endSeq: number; fileName: string }[] = [];
 		for (let i = 0; i < list.length; i += INTERVAL_SUMMARY_SIZE) {
@@ -2184,12 +2184,8 @@ export class LibraryService {
 			let state: SummaryState;
 			if (summaryMtime === undefined) {
 				state = 'missing';
-			} else if (
-				minSeq === undefined ||
-				range.startSeq < minSeq ||
-				range.endSeq > maxSeq!
-			) {
-				// 区间内还有尚未创建的章节：该摘要仍是计划
+			} else if (inRange.length < range.endSeq - range.startSeq + 1) {
+				// 区间内还有尚未创建的章节（含序号空洞）：该摘要仍是计划
 				state = 'planned';
 			} else {
 				state = (await this.newestMtime(inRange.map((c) => this.chapterPath(book, c.fileName, c.volumeDir)))) >
@@ -2404,7 +2400,16 @@ export class LibraryService {
 
 	getCurrentBook(): BookInfo | undefined {
 		const dir = this.context.globalState.get<string>(CURRENT_BOOK_KEY);
-		return dir ? { name: path.basename(dir), dir } : undefined;
+		if (!dir) {
+			return undefined;
+		}
+		// 书都是库根的直接子目录：库路径变更后旧库的书不再算「当前书」（未配置库路径时不过滤，
+		// 与 renameBook / removeBook 等按书目录直接操作的行为保持一致）
+		const root = this.getLibraryPath();
+		if (root && path.dirname(path.normalize(dir)) !== path.normalize(root)) {
+			return undefined;
+		}
+		return { name: path.basename(dir), dir };
 	}
 
 	async setCurrentBook(dir: string | undefined): Promise<void> {

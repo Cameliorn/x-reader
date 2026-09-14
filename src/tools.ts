@@ -482,9 +482,8 @@ async function readIntervalSummary(
 	}
 	// 未创建（或尚未列入默认区间的自定义区间）：给出应写入的路径与区间内已有章节
 	const chapters = target?.chapters ?? (await library.chaptersInRange(book, parsed.startSeq, parsed.endSeq));
-	const all = await library.listChapters(book);
-	const seqs = all.map((c) => c.seq);
-	const planned = seqs.length === 0 || parsed.startSeq < Math.min(...seqs) || parsed.endSeq > Math.max(...seqs);
+	// 区间内序号不齐全（越出现存章节，或中间还有没写的章节）时，写入的摘要即计划
+	const planned = chapters.length < parsed.endSeq - parsed.startSeq + 1;
 	const chapterList = chapters.map((c) => `${chapterRelPath(c)}（${c.title}）`).join('、') || '（尚无）';
 	const filePath = path.join(
 		book.dir,

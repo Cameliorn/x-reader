@@ -46,6 +46,9 @@ export class BookshelfProvider extends LibraryTreeProvider<BookshelfItem> {
 		if (element?.kind === 'book') {
 			return [];
 		}
+		if (!this.library.getLibraryPath()) {
+			return [];
+		}
 		const books = await this.getBooks();
 		if (!element) {
 			await this.loadChapterCounts(books);

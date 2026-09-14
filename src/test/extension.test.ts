@@ -1282,6 +1282,71 @@ suite('摘要：卷摘要与计划摘要', () => {
 		}
 	});
 
+	test('区间内序号有空洞（范围内还有没写的章节）时该区间摘要仍算计划', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+			// 1–3 与 500 之间的序号根本没有正文
+			await service.createChapterAt(book, 500, '遥远的终章', '第一卷');
+			await service.ensureIntervalSummary(book, 3, 12);
+
+			const intervals = await service.listIntervalSummaries(book);
+			assert.deepStrictEqual(
+				intervals.map((interval) => [interval.fileName, interval.state]),
+				[['0003-0012.md', 'planned']]
+			);
+
+			// 序号齐全的区间不受影响
+			await service.ensureIntervalSummary(book, 1, 3);
+			const next = await service.listIntervalSummaries(book);
+			assert.strictEqual(next.find((interval) => interval.fileName === '0001-0003.md')?.state, 'ok');
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('计划摘要引用带 章节摘要/ 前缀时槽位不嵌套摘要目录', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(root, '书', BOOK_TEXT);
+
+			// readSummary(scope=plan) 输出的引用形如 章节摘要/第一卷/0004-抵达
+			const slot = await service.chapterPlanSlot(book, '章节摘要/第一卷/0004-抵达.md');
+			const slotPath = slot && 'filePath' in slot ? slot.filePath : undefined;
+			assert.strictEqual(slotPath, path.join(book.dir, CHAPTER_SUMMARIES_DIR, '第一卷', '0004-抵达.md'));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('章节标题含文件名非法字符时，重命名仍同步摘要首行标题', async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		try {
+			const service = makeService();
+			const { book } = await createBookFromText(
+				root,
+				'书',
+				['# 第一卷', '## 第1章 甲/乙', '正文'].join('\n')
+			);
+			const chapter = (await service.listChapters(book))[0];
+			// 摘要首行沿用章节内容标题（含 /），文件名则是清洗后的
+			const summaryPath = await service.ensureChapterSummary(book, chapter);
+			assert.strictEqual((await fs.readFile(summaryPath, 'utf8')).split('\n')[0], '# 第1章 甲/乙 · 摘要');
+
+			await service.renameChapter(book, chapter, '第1章 丙/丁');
+			const renamed = (await service.listChapters(book))[0];
+			const md = await fs.readFile(
+				path.join(book.dir, CHAPTER_SUMMARIES_DIR, renamed.volumeDir ?? '', renamed.fileName),
+				'utf8'
+			);
+			assert.strictEqual(md.split('\n')[0], '# 第1章 丙丁 · 摘要');
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('卷内有计划章节但卷摘要未创建时状态仍是未建', async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
 		try {
@@ -1617,6 +1682,40 @@ suite('子书架（多级分类）', () => {
 			(await service.listShelves()).find((s) => s.name === '题材/同人/XXX')?.books,
 			[renamed.name]
 		);
+	});
+});
+
+suite('当前书归属库路径', () => {
+	let rootA = '';
+	let rootB = '';
+	let prevLibraryPath: string | undefined;
+	const service = makeService();
+
+	setup(async () => {
+		rootA = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		rootB = await fs.mkdtemp(path.join(os.tmpdir(), 'xreader-lib-'));
+		prevLibraryPath = vscode.workspace.getConfiguration('xReader').get<string>('libraryPath');
+	});
+
+	teardown(async () => {
+		await vscode.workspace
+			.getConfiguration('xReader')
+			.update('libraryPath', prevLibraryPath ?? '', vscode.ConfigurationTarget.Global);
+		await fs.rm(rootA, { recursive: true, force: true });
+		await fs.rm(rootB, { recursive: true, force: true });
+	});
+
+	test('切换库路径后旧库的书不再算当前书（切回原库恢复）', async () => {
+		const cfg = vscode.workspace.getConfiguration('xReader');
+		await cfg.update('libraryPath', rootA, vscode.ConfigurationTarget.Global);
+		const book = await service.createBook('书');
+		assert.strictEqual(service.getCurrentBook()?.dir, book.dir);
+
+		await cfg.update('libraryPath', rootB, vscode.ConfigurationTarget.Global);
+		assert.strictEqual(service.getCurrentBook(), undefined);
+
+		await cfg.update('libraryPath', rootA, vscode.ConfigurationTarget.Global);
+		assert.strictEqual(service.getCurrentBook()?.dir, book.dir);
 	});
 });
 
