@@ -40,7 +40,7 @@ extension.ts          — 入口（activate），注册命令、树视图与阅�
 - **用户界面文本**使用简体中文；本地化见「关键约定 · 本地化」。
 - **本地化**：静态字符串（displayName/description/命令标题/视图名/配置说明/工具 displayName）在 `package.json` 中写 `%key%` 引用，翻译在 `package.nls.json`（英文默认）+ `package.nls.zh-cn.json`（中文）；代码内 UI 字符串用 `vscode.l10n.t('英文消息', 参数)`，翻译在 `l10n/bundle.l10n.zh-cn.json`（英文源 `bundle.l10n.json` 为清单）。**不本地化**：`modelDescription`（给 agent 的中文提示）与 xReader 工具返回的结果文本（agent 工作域保持中文）。新增 UI 字符串时须同步更新 bundle 文件。
 - **大书库性能约定**（目标：上千本书 / 100MB 级仓库）：
-  - 目录扫描一律经 `library.ts` 的 `mapLimit`（`SCAN_CONCURRENCY = 16`）分批执行，不要写无上限的 `Promise.all` 映射——上千本书或上千章时会同时打开过多句柄（EMFILE）。`listBooks`、分卷/章节扫描、章节摘要状态判定都已走这条路。
+  - 目录扫描一律经 `services/scan.ts` 的 `mapLimit`（`SCAN_CONCURRENCY = 16`）分批执行，不要写无上限的 `Promise.all` 映射——上千本书或上千章时会同时打开过多句柄（EMFILE）。`listBooks`、分卷/章节扫描、章节摘要状态判定、导入时写全部章节、全书导航重写、视图层与 agent 侧的清单读取都已走这条路。
   - 只需要「章节数」时用 `countChapters(book)` / `listChapterCounts(books)`（只列目录），**不要**用 `listChapters(book).length`——后者会逐章打开文件读首行标题，为计数付出读正文的代价。
   - 书库变更通知统一走 `LibraryService.scheduleRefresh()`（80ms 合并窗口），不要直接 `_onDidChange.fire()`：批量操作（连续导入、批量改名）逐次触发会让每个视图各来一次全量重扫。
   - 书架视图书数超过 `INLINE_CHAPTER_COUNT_LIMIT`（50）时改为后台补章节计数、完成后二次刷新，保证大书库展开即刻出节点；书架视图内不要改回同步 `listChapters` 计数。

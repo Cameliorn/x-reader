@@ -21,6 +21,7 @@
     "command.importBook.title": "Import Novel",
     "command.newBook.title": "New Novel",
     "command.searchBook.title": "Search Books",
+    "command.revealCurrentBook.title": "Locate Current Book",
     "command.exportBook.title": "Export Novel as txt",
     "command.openBook.title": "Open",
     "command.openChapter.title": "Open Chapter",

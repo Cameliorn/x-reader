@@ -131,6 +131,26 @@ export class BookshelfProvider extends LibraryTreeProvider<BookshelfItem> {
 		return books.map((book) => ({ kind: 'book' as const, shelfName, isDefaultShelf, ...book }));
 	}
 
+	/** 供 TreeView.reveal 定位（「定位当前书」）：书在所属子书架下，子书架挂在上级路径下。 */
+	async getParent(element: BookshelfItem): Promise<BookshelfItem | undefined> {
+		if (element.kind === 'book') {
+			return this.shelfNode(element.shelfName, element.isDefaultShelf);
+		}
+		if (element.isDefault) {
+			return undefined;
+		}
+		const parentPath = shelfParentPath(element.name);
+		return parentPath === undefined ? undefined : this.shelfNode(parentPath, false);
+	}
+
+	/** 组装子书架节点（count 取子树内去重后的书数）。 */
+	private async shelfNode(name: string, isDefault: boolean): Promise<BookshelfItem> {
+		const count = isDefault
+			? (await this.getBooks()).length
+			: this.subtreeBookCount(await this.library.listShelves(), name);
+		return { kind: 'shelf', name, isDefault, count };
+	}
+
 	getTreeItem(item: BookshelfItem): vscode.TreeItem {
 		return item.kind === 'shelf' ? this.shelfTreeItem(item) : this.bookTreeItem(item);
 	}

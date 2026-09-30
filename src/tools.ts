@@ -19,6 +19,7 @@ import {
 	WORLD_DIR,
 } from './services/library';
 import { intervalSummaryFileName, type BookMetadata } from './services/markdown';
+import { mapLimit, SCAN_CONCURRENCY } from './services/scan';
 
 /** 工具返回文本结果。 */
 const text = (value: string): vscode.LanguageModelToolResult =>
@@ -80,8 +81,11 @@ function requireParam(value: string | undefined, name: string): string {
 
 /** 取必填整数参数（必填性同样由 action 决定），缺失或非整数时抛错。 */
 function requireNumber(value: number | undefined, name: string): number {
-	if (typeof value !== 'number' || !Number.isInteger(value)) {
+	if (value === undefined) {
 		throw new Error(vscode.l10n.t('Pass the {0} parameter.', name));
+	}
+	if (typeof value !== 'number' || !Number.isInteger(value)) {
+		throw new Error(vscode.l10n.t('The {0} parameter must be an integer.', name));
 	}
 	return value;
 }
@@ -252,11 +256,13 @@ async function listEntriesGrouped(
 		lines.push(`【分类：${category.path}】`);
 		const entries = await library.listEntries(book, subDir, category.path);
 		lines.push(
-			...(await Promise.all(entries.map((entry) => lineOf(`${subDir}/${category.path}/${entry.fileName}`, entry.name))))
+			...(await mapLimit(entries, SCAN_CONCURRENCY, (entry) =>
+				lineOf(`${subDir}/${category.path}/${entry.fileName}`, entry.name)
+			))
 		);
 	}
 	const rootEntries = await library.listEntries(book, subDir);
-	lines.push(...(await Promise.all(rootEntries.map((entry) => lineOf(`${subDir}/${entry.fileName}`, entry.name)))));
+	lines.push(...(await mapLimit(rootEntries, SCAN_CONCURRENCY, (entry) => lineOf(`${subDir}/${entry.fileName}`, entry.name))));
 	return lines;
 }
 
@@ -793,7 +799,9 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					invocationMessage: vscode.l10n.t('Delete book “{0}”', target),
 					confirmationMessages: {
 						title: vscode.l10n.t('Delete Book'),
-						message: new vscode.MarkdownString(vscode.l10n.t('Delete {0}?', target)),
+						message: new vscode.MarkdownString(
+							vscode.l10n.t('Delete book “{0}” and all its contents?', target)
+						),
 					},
 				};
 			},
@@ -812,7 +820,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 				if (action === 'deletePlan') {
 					// 计划卷摘要针对的可能是尚未创建的分卷，故不要求分卷目录存在
 					const fileName = await library.removeVolumePlan(book, ref);
-					return text(`已删除卷计划摘要 ${VOLUME_SUMMARIES_DIR}/${fileName}（卷内还没有正文或还有计划章节）。`);
+					return text(`已删除卷计划摘要 ${VOLUME_SUMMARIES_DIR}/${fileName}。`);
 				}
 				const volumeDir = await requireVolumeDir(library, book, ref);
 				if (action === 'rename') {
@@ -876,7 +884,8 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 						const volume = input.volume?.trim();
 						const volumeDir = volume ? pickVolume(await library.listVolumes(book), volume).dirName : undefined;
 						const fileName = await library.createChapter(book, requireParam(input.title, 'title'), volumeDir);
-						return text(`已新建章节：${chapterRelPath({ fileName, volumeDir })}。`);
+						const target = path.join(book.dir, CHAPTERS_DIR, chapterRelPath({ fileName, volumeDir }));
+						return text(`已新建章节：${target}。请用文件工具写入正文。`);
 					}
 					case 'insert': {
 						const title = requireParam(input.title, 'title');
@@ -906,18 +915,26 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 										? undefined
 										: { seq, volumeDir }
 							);
-							const target = chapterRelPath({
-								fileName: result.fileName,
-								volumeDir: anchor ? anchor.volumeDir : volumeDir,
-							});
+							const target = path.join(
+								book.dir,
+								CHAPTER_SUMMARIES_DIR,
+								chapterRelPath({
+									fileName: result.fileName,
+									volumeDir: anchor ? anchor.volumeDir : volumeDir,
+								})
+							);
 							const shifting = result.shifted > 0 ? `其后的 ${result.shifted} 章序号已顺延 +1。` : '';
 							return text(
-								`已创建计划章节摘要：${CHAPTER_SUMMARIES_DIR}/${target}。${shifting}正文尚未创建，请用文件工具把计划写进该文件；按此位置写正文（action=insert）时该摘要会自动接手。`
+								`已创建计划章节摘要：${target}。${shifting}正文尚未创建，请用文件工具把计划写进该文件；按此位置写正文（action=insert）时该摘要会自动接手。`
 							);
 						}
 						if (anchor) {
 							const result = await library.insertChapter(book, title, after ? { after: anchor } : { before: anchor });
-							const target = chapterRelPath({ fileName: result.fileName, volumeDir: anchor.volumeDir });
+							const target = path.join(
+								book.dir,
+								CHAPTERS_DIR,
+								chapterRelPath({ fileName: result.fileName, volumeDir: anchor.volumeDir })
+							);
 							const shifting = result.renumbered > 0 ? `其后的 ${result.renumbered} 章序号已顺延 +1。` : '';
 							return text(
 								`已在「${anchor.title || anchor.fileName}」${after ? '之后' : '之前'}插入新章节：${target}。${shifting}请用文件工具写入正文。`
@@ -931,7 +948,7 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 							);
 						}
 						const created = await library.createChapterAt(book, seq, title, volumeDir);
-						const target = chapterRelPath({ fileName: created.fileName, volumeDir });
+						const target = path.join(book.dir, CHAPTERS_DIR, chapterRelPath({ fileName: created.fileName, volumeDir }));
 						const shifting = created.shifted > 0 ? `其后的 ${created.shifted} 章序号已顺延 +1。` : '';
 						return text(
 							`已在第 ${seq} 章的位置创建章节：${target}。${shifting}请用文件工具写入正文；同序号若有计划摘要，已自动接手。`
@@ -944,10 +961,11 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					}
 					case 'move': {
 						const chapter = await requireChapter(library, book, requireParam(input.chapter, 'chapter'));
-						const target = pickVolume(await library.listVolumes(book), requireParam(input.volume, 'volume'));
-						await library.moveChapter(book, chapter, target.dirName);
+						// 目标只能是真实分卷（与界面「移动到分卷」一致）：章节根目录的虚拟卷不是分卷
+						const volumeDir = await requireVolumeDir(library, book, requireParam(input.volume, 'volume'));
+						await library.moveChapter(book, chapter, volumeDir);
 						return text(
-							`已把第${chapter.seq}章「${chapter.title}」从 ${chapter.volumeDir ?? '（章节根目录）'} 移动到分卷「${target.name}」（${CHAPTERS_DIR}/${target.dirName ?? '（根目录）'}）。章节序号不变，导航、摘要镜像、笔记关联与阅读进度已同步。`
+							`已把第${chapter.seq}章「${chapter.title}」从 ${chapter.volumeDir ?? '（章节根目录）'} 移动到分卷「${volumeDir}」（${CHAPTERS_DIR}/${volumeDir}）。章节序号不变，导航、摘要镜像、笔记关联与阅读进度已同步。`
 						);
 					}
 					case 'deletePlan': {
@@ -967,7 +985,12 @@ export function registerAgentTools(context: vscode.ExtensionContext, library: Li
 					return { invocationMessage: vscode.l10n.t('Create chapter “{0}”', title ?? '') };
 				}
 				if (action === 'insert') {
-					return { invocationMessage: vscode.l10n.t('Insert chapter “{0}”', title ?? '') };
+					return {
+						invocationMessage:
+							options.input.plan === true
+								? vscode.l10n.t('Create chapter plan “{0}”', title ?? '')
+								: vscode.l10n.t('Insert chapter “{0}”', title ?? ''),
+					};
 				}
 				if (action === 'rename') {
 					return {

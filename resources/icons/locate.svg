@@ -1,0 +1,13 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="16" height="16">
+    <rect width="16" height="16" fill="#fff"/>
+    <circle cx="8" cy="8" r="1.5" fill="#000"/>
+  </mask>
+  <g mask="url(#cut)">
+    <circle cx="8" cy="8" r="3" fill="#6e6e6e"/>
+    <rect x="7.15" y="0.9" width="1.7" height="3.3" rx="0.85" fill="#6e6e6e"/>
+    <rect x="7.15" y="11.8" width="1.7" height="3.3" rx="0.85" fill="#6e6e6e"/>
+    <rect x="0.9" y="7.15" width="3.3" height="1.7" rx="0.85" fill="#6e6e6e"/>
+    <rect x="11.8" y="7.15" width="3.3" height="1.7" rx="0.85" fill="#6e6e6e"/>
+  </g>
+</svg>

@@ -22,6 +22,7 @@ import {
 	chapterRelPath,
 	CHAPTERS_DIR,
 	closeFileTabs,
+	DEFAULT_SHELF_NAME,
 	INTERVAL_SUMMARY_SIZE,
 	LibraryService,
 	matchesProgress,
@@ -661,6 +662,20 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (book) {
 				await vscode.commands.executeCommand('xReader.openBook', book);
 			}
+		}),
+		vscode.commands.registerCommand('xReader.revealCurrentBook', async () => {
+			const book = library.getCurrentBook();
+			if (!book) {
+				void vscode.window.showInformationMessage(vscode.l10n.t('Select a book in the bookshelf first'));
+				return;
+			}
+			// 同一本书可能挂在多个子书架下，定位默认子书架里那份
+			await bookshelfView
+				.reveal(
+					{ kind: 'book', shelfName: DEFAULT_SHELF_NAME, isDefaultShelf: true, ...book },
+					{ select: true, focus: true, expand: true }
+				)
+				.then(undefined, () => undefined);
 		}),
 		vscode.commands.registerCommand('xReader.openBook', async (bookDir?: string | BookInfo) => {
 			let dir = typeof bookDir === 'string' ? bookDir : (bookDir?.dir ?? library.getCurrentBook()?.dir);

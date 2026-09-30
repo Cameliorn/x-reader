@@ -38,6 +38,7 @@ import {
 	updateChapterNav,
 } from '../services/markdown';
 import { decodeBuffer, parseChapters } from '../services/novelParser';
+import { mapLimit, SCAN_CONCURRENCY } from '../services/scan';
 
 /** 文件是否存在。 */
 const exists = async (p: string): Promise<boolean> => fs.access(p).then(() => true, () => false);
@@ -1795,6 +1796,24 @@ suite('大书库扫描', () => {
 			await cfg.update('libraryPath', prev ?? '', vscode.ConfigurationTarget.Global);
 			await fs.rm(root, { recursive: true, force: true });
 		}
+	});
+
+	test('mapLimit 保序、限制并发并传递下标', async () => {
+		const items = Array.from({ length: 40 }, (_, i) => i + 1);
+		let active = 0;
+		let peak = 0;
+		const results = await mapLimit(items, 8, async (item, index) => {
+			assert.strictEqual(item, items[index]);
+			active++;
+			peak = Math.max(peak, active);
+			await new Promise((resolve) => setTimeout(resolve, 1));
+			active--;
+			return item * 2;
+		});
+
+		assert.deepStrictEqual(results, items.map((n) => n * 2));
+		assert.ok(peak <= 8, `并发峰值 ${peak} 不应超过 8`);
+		assert.strictEqual((await mapLimit([], SCAN_CONCURRENCY, async () => 1)).length, 0);
 	});
 });
 

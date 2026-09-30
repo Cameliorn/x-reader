@@ -150,6 +150,12 @@
         "icon": "resources/icons/search.svg"
       },
       {
+        "command": "xReader.revealCurrentBook",
+        "title": "%command.revealCurrentBook.title%",
+        "category": "X Reader",
+        "icon": "resources/icons/locate.svg"
+      },
+      {
         "command": "xReader.exportBook",
         "title": "%command.exportBook.title%",
         "category": "X Reader",
@@ -736,7 +742,7 @@
         "toolReferenceName": "manageChapter",
         "canBeReferencedInPrompt": true,
         "icon": "resources/icons/add-chapter.svg",
-        "modelDescription": "章节的结构化操作，用 action 区分：create 按 title 新建章节（可选 volume 归入指定分卷，省略时接在全书最后）；insert 在 after 或 before 指定的参照章节前 / 后插入 title（两者只给一个，值为章节相对路径、文件名或标题），也可以直接给 seq 指定章节序号（可落在存量中间或留出空洞）——序号被占用时该序号及其后的正文与计划摘要一并顺延 +1（同步摘要镜像 / 笔记关联 / 进度），同序号若有计划摘要会自动接手成为该章摘要；给 plan=true 时只建「计划章节摘要」而不写正文（位置同样可用 after/before/seq，都不给则接在末尾）；rename 把 chapter 重命名为 newTitle（文件名、相邻导航、摘要镜像、笔记引用与进度同步）；move 把 chapter 移到 volume 分卷（序号不变）；delete 删除 chapter 及其摘要镜像；deletePlan 只删「有摘要无正文」的计划章节摘要（正文对应的摘要不单独删，删章节时才连同清理）（执行前向用户确认）。insert 后返回新章节路径，正文用文件工具写入。注意：不要用文件工具直接新建 / 改名 / 移动 / 删除 章节/ 下的 md，否则导航、摘要镜像、进度与笔记关联会失联。",
+        "modelDescription": "章节的结构化操作，用 action 区分：create 按 title 新建章节（可选 volume 归入指定分卷，省略时接在全书最后）；insert 在 after 或 before 指定的参照章节前 / 后插入 title（两者只给一个，值为章节相对路径、文件名或标题），也可以直接给 seq 指定章节序号（可落在存量中间或留出空洞）——序号被占用时该序号及其后的正文与计划摘要一并顺延 +1（同步摘要镜像 / 笔记关联 / 进度），同序号若有计划摘要会自动接手成为该章摘要；给 plan=true 时只建「计划章节摘要」而不写正文（位置同样可用 after/before/seq，都不给则接在末尾）；rename 把 chapter 重命名为 newTitle（文件名、相邻导航、摘要镜像、笔记引用与进度同步）；move 把 chapter 移到 volume 分卷（序号不变；目标须是真实分卷，章节根目录的虚拟卷不能作为目标）；delete 删除 chapter 及其摘要镜像；deletePlan 只删「有摘要无正文」的计划章节摘要（正文对应的摘要不单独删，删章节时才连同清理）（执行前向用户确认）。insert 后返回新章节路径，正文用文件工具写入。注意：不要用文件工具直接新建 / 改名 / 移动 / 删除 章节/ 下的 md，否则导航、摘要镜像、进度与笔记关联会失联。",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -770,7 +776,7 @@
             },
             "volume": {
               "type": "string",
-              "description": "分卷（卷名或目录名；action=create 指定归入的分卷、action=move 指定目标分卷）"
+              "description": "分卷（卷名或目录名；action=create 指定归入的分卷、action=move 指定目标分卷（须为真实分卷）、action=insert 配合 seq 指定新章节归入的分卷）"
             },
             "after": {
               "type": "string",
@@ -1035,8 +1041,8 @@
           "group": "navigation@2"
         },
         {
-          "command": "xReader.snapshot",
-          "when": "view == xReader.bookshelf",
+          "command": "xReader.revealCurrentBook",
+          "when": "view == xReader.bookshelf && !xReader.noLibrary && !xReader.noBooks",
           "group": "navigation@3"
         },
         {
@@ -1048,6 +1054,11 @@
           "command": "xReader.exportBook",
           "when": "view == xReader.bookshelf && !xReader.noLibrary && !xReader.noBooks",
           "group": "export"
+        },
+        {
+          "command": "xReader.snapshot",
+          "when": "view == xReader.bookshelf",
+          "group": "snapshot"
         },
         {
           "command": "xReader.resetHistory",

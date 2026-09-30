@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { BookInfo } from '../model/book';
 import { buildChapterMarkdown, buildMetadataMarkdown, chapterFileName, navRelPath, sanitizeFileTitle } from './markdown';
 import { parseChapters } from './novelParser';
+import { mapLimit, SCAN_CONCURRENCY } from './scan';
 
 export const CHAPTERS_DIR = '章节';
 export const WORLD_DIR = '世界书';
@@ -61,21 +62,19 @@ export async function createBookFromText(
 		const fileName = chapterFileName(i + 1, chapter.title);
 		return volumeDir ? `${volumeDir}/${fileName}` : fileName;
 	});
-	await Promise.all(
-		chapters.map(async (chapter, i) => {
-			const end = Math.min(chapter.endLine, lines.length - 1);
-			const body = lines.slice(chapter.startLine + 1, end + 1).join('\n');
-			const fromVolume = volumeDirOf(chapter);
-			const prevNav =
-				i > 0 ? navRelPath(fromVolume, volumeDirOf(chapters[i - 1]), chapterFileName(i, chapters[i - 1].title)) : undefined;
-			const nextNav =
-				i < chapters.length - 1
-					? navRelPath(fromVolume, volumeDirOf(chapters[i + 1]), chapterFileName(i + 2, chapters[i + 1].title))
-					: undefined;
-			const md = buildChapterMarkdown(chapter.title, body, prevNav, nextNav);
-			await fs.writeFile(path.join(dir, CHAPTERS_DIR, relPaths[i]), md, 'utf8');
-		})
-	);
+	await mapLimit(chapters, SCAN_CONCURRENCY, async (chapter, i) => {
+		const end = Math.min(chapter.endLine, lines.length - 1);
+		const body = lines.slice(chapter.startLine + 1, end + 1).join('\n');
+		const fromVolume = volumeDirOf(chapter);
+		const prevNav =
+			i > 0 ? navRelPath(fromVolume, volumeDirOf(chapters[i - 1]), chapterFileName(i, chapters[i - 1].title)) : undefined;
+		const nextNav =
+			i < chapters.length - 1
+				? navRelPath(fromVolume, volumeDirOf(chapters[i + 1]), chapterFileName(i + 2, chapters[i + 1].title))
+				: undefined;
+		const md = buildChapterMarkdown(chapter.title, body, prevNav, nextNav);
+		await fs.writeFile(path.join(dir, CHAPTERS_DIR, relPaths[i]), md, 'utf8');
+	});
 	return { book: { name, dir }, chapterCount: chapters.length };
 }
 

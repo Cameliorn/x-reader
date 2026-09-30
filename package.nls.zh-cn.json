@@ -21,6 +21,7 @@
     "command.importBook.title": "导入小说",
     "command.newBook.title": "新建书籍",
     "command.searchBook.title": "搜索书籍",
+    "command.revealCurrentBook.title": "定位当前书",
     "command.exportBook.title": "导出小说为 txt",
     "command.openBook.title": "打开",
     "command.openChapter.title": "打开章节",

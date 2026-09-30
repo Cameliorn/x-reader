@@ -43,6 +43,7 @@ import {
 	volumeSummaryFileName,
 } from './markdown';
 import { decodeBuffer } from './novelParser';
+import { mapLimit, SCAN_CONCURRENCY } from './scan';
 
 export {
 	CARDS_DIR,
@@ -200,31 +201,8 @@ async function pathExists(filePath: string): Promise<boolean> {
 	}
 }
 
-/**
- * 目录扫描并发上限：大书库（上千本书 / 单本上千章）下无上限的 Promise.all 会同时打开过多句柄（EMFILE），
- * 也更容易拖慢磁盘；按批执行兼顾吞吐与稳定。
- */
-const SCAN_CONCURRENCY = 16;
-
 /** 变更通知合并窗口：批量操作（连续导入、顺延改名等）只触发一次全量刷新。 */
 const REFRESH_COALESCE_MS = 80;
-
-/** 按并发上限并行映射，结果顺序与输入一致。 */
-async function mapLimit<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
-	const results = new Array<R>(items.length);
-	let cursor = 0;
-	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-		for (; ;) {
-			const index = cursor++;
-			if (index >= items.length) {
-				return;
-			}
-			results[index] = await task(items[index]);
-		}
-	});
-	await Promise.all(workers);
-	return results;
-}
 
 const VOLUME_NAME_RE = /^\s*第\s*([0-9零〇一二两三四五六七八九十百千万拾佰仟]+)\s*卷/;
 
@@ -1704,18 +1682,16 @@ export class LibraryService {
 	/** 按全局章节顺序重算并重写全部章节的底部导航（有变化才写回）；用于分卷重命名/删除后修复跨卷链接。 */
 	private async rewriteBookChapterNavs(book: BookInfo): Promise<void> {
 		const chapters = await this.listChapters(book);
-		await Promise.all(
-			chapters.map((chapter, i) => {
-				const prev = i > 0 ? chapters[i - 1] : undefined;
-				const next = i < chapters.length - 1 ? chapters[i + 1] : undefined;
-				return this.rewriteChapterNav(
-					book,
-					chapter,
-					prev ? navRelPath(chapter.volumeDir, prev.volumeDir, prev.fileName) : undefined,
-					next ? navRelPath(chapter.volumeDir, next.volumeDir, next.fileName) : undefined
-				);
-			})
-		);
+		await mapLimit(chapters, SCAN_CONCURRENCY, (chapter, i) => {
+			const prev = i > 0 ? chapters[i - 1] : undefined;
+			const next = i < chapters.length - 1 ? chapters[i + 1] : undefined;
+			return this.rewriteChapterNav(
+				book,
+				chapter,
+				prev ? navRelPath(chapter.volumeDir, prev.volumeDir, prev.fileName) : undefined,
+				next ? navRelPath(chapter.volumeDir, next.volumeDir, next.fileName) : undefined
+			);
+		});
 	}
 
 	/** 文件最后修改时间（毫秒）；文件不存在或不可读时返回 undefined。 */

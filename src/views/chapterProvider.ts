@@ -8,6 +8,7 @@ import {
 	sameChapter,
 	VERSIONS_DIR,
 } from '../services/library';
+import { mapLimit, SCAN_CONCURRENCY } from '../services/scan';
 import { LibraryTreeProvider } from './libraryTreeProvider';
 
 /** 章节的备选版本节点。 */
@@ -61,17 +62,15 @@ export class ChapterProvider extends LibraryTreeProvider<ChapterNode> {
 	/** 列出分卷并统计各章节的备选版本数（每卷一次目录扫描）。 */
 	private async loadVolumes(book: BookInfo): Promise<ChapterVolume[]> {
 		const volumes = await this.library.listVolumes(book);
-		await Promise.all(
-			volumes.map(async (volume) => {
-				const counts = await this.library.listVolumeVersionCounts(book, volume.dirName);
-				for (const [base, count] of counts) {
-					const chapter = volume.chapters.find((c) => c.fileName.replace(/\.md$/, '') === base);
-					if (chapter) {
-						this.versionCounts.set(chapterRelPath(chapter), count);
-					}
+		await mapLimit(volumes, SCAN_CONCURRENCY, async (volume) => {
+			const counts = await this.library.listVolumeVersionCounts(book, volume.dirName);
+			for (const [base, count] of counts) {
+				const chapter = volume.chapters.find((c) => c.fileName.replace(/\.md$/, '') === base);
+				if (chapter) {
+					this.versionCounts.set(chapterRelPath(chapter), count);
 				}
-			})
-		);
+			}
+		});
 		return volumes;
 	}
 
